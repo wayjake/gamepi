@@ -124,3 +124,54 @@ Two constraints are baked in rather than remembered:
 
 Nothing is anti-aliased, on purpose: composite video on a CRT is the filter,
 and hard edges are the style.
+
+## Motion
+
+    scripts/pi-run.sh src/render.js --animate      # 30 fps on the CRT, Ctrl-C to stop
+    node src/render.js --at 1.5 --png frame.png    # one frame from partway in
+
+Scenes are `build(width, height, t)` where `t` is seconds, and animation is
+applied to the scene *description* -- control points, radii, ray angles -- never
+to pixels. A limb sways because its control points move, tapered by how far
+along the limb each one sits, so it bends from the shoulder instead of sliding
+sideways. `src/gfx/motion.js` has the four functions that cover it: `sway`,
+`hop`, `pulse`, `cycle`.
+
+`src/gfx/stage.js` derives time from the frame counter (`t = n / fps`) rather
+than the wall clock. Frame n therefore always draws the same picture, which is
+what lets `npm test` render a frame and compare it; the cost is that if the
+renderer falls behind it runs slow rather than dropping frames, so the loop
+reports lateness instead of hiding it.
+
+### Making it fast enough
+
+The first working version ran at 19 fps. Measured on the Pi 4, per frame at
+720x480:
+
+| stage | before | after |
+| --- | --- | --- |
+| build scene description | 0.7 ms | 0.7 ms |
+| rasterise | 34.6 ms | 6.5 ms |
+| pack to RGB565 | 15.9 ms | 7.0 ms |
+| write to /dev/fb0 | 0.3 ms | 0.3 ms |
+| **total** | **51.5 ms (19 fps)** | **14.4 ms (69 fps)** |
+
+Two changes did it. Limbs were drawn by stepping discs along the skeleton at
+half-pixel spacing, which is obviously correct and enormously wasteful -- the
+overdraw is O(rows x area). A limb segment is the convex hull of its two end
+discs, so its boundary is two arcs joined by the pair of external tangents, and
+each scanline's span is just the widest of disc A's chord, disc B's chord, and
+where those tangents cross. That is O(rows), and a pixel diff against the
+disc-stepped version across 40 random shapes differs by 6 pixels in 534,799.
+The old routine is kept as `chainByDiscs` so the test can keep proving it.
+
+Packing was allocating and zeroing a 691 KB buffer every frame and calling
+`writeUInt16LE` per pixel. It now writes through a `Uint16Array` view into a
+buffer held open across frames, with a small direct-mapped cache for the colour
+conversion -- flat art uses a handful of distinct colours, so nearly every
+pixel is a cache hit.
+
+Known limit: there is no vsync. `FBIO_WAITFORVSYNC` needs an ioctl, which pure
+Node can't issue, so a frame can in principle tear. The write is 0.3 ms against
+a 16.7 ms field, so the window is about 2% -- visible tearing would need a
+native shim.

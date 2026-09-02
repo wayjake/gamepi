@@ -27,6 +27,24 @@ test('every palette colour is legal for composite video', () => {
 for (const file of fs.readdirSync(SCENES).filter((f) => f.endsWith('.js'))) {
   const build = require(path.join(SCENES, file));
 
+  test(`${file}: animates, and each frame is reproducible`, () => {
+    const frame = (t) => png.encode(sceneRenderer.render(build(720, 480, t)));
+
+    // Frame n must always draw the same picture: the stage derives t from the
+    // frame counter precisely so playback can be reproduced and diffed.
+    assert.ok(frame(0.7).equals(frame(0.7)), 'the same t renders differently twice');
+
+    // And something has to actually move, unless the scene says it is a still
+    // on purpose -- the calibration ruler would be useless if it drifted.
+    const still = frame(0);
+    const moved = [0.2, 0.4, 0.6, 0.8].map(frame);
+    if (build(720, 480, 0).still) {
+      assert.ok(moved.every((f) => f.equals(still)), 'a scene marked still is moving');
+    } else {
+      assert.ok(moved.some((f) => !f.equals(still)), 'nothing in the scene responds to t');
+    }
+  });
+
   test(`${file}: renders deterministically`, () => {
     // Textures use a seeded generator; an unseeded Math.random would make
     // every render different and every visual comparison meaningless.

@@ -45,6 +45,7 @@ module.exports = function calibrate(width = 720, height = 480) {
 
   return {
     title: 'Calibrate',
+    still: true, // a ruler that moved would be a useless ruler
     width,
     height,
     background: PALETTE.ink,
