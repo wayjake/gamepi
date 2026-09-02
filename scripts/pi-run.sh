@@ -6,5 +6,10 @@ set -euo pipefail
 PI="${PI:-jake@gamepi.local}"
 DEST="${DEST:-gamePi}"
 
+# Allocate a pty when we have one, so Ctrl-C reaches the process on the Pi.
+# Without it, killing the local ssh leaves node and aplay orphaned and playing.
+tty=""
+[ -t 0 ] && tty="-t"
+
 remote=$(printf ' %q' "$@")
-ssh "$PI" "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null; cd $DEST && node$remote"
+ssh $tty "$PI" "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null; cd $DEST && node$remote"

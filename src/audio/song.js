@@ -37,12 +37,16 @@ const VOICES = {
   },
 };
 
-// Noise voices. Frequency here is the LFSR clock, not a pitch.
+// Noise voices. Frequency here is the LFSR clock, not a pitch. Each hit is
+// gated for its full attack+decay (see drumGate) so the decay you write is the
+// decay you hear -- gating early just clips the hit short.
 const DRUMS = {
-  K: { freq: 260, volume: 0.30, gate: 0.02, env: { attack: 0.001, decay: 0.045, sustain: 0, release: 0.02 } },
-  S: { freq: 1900, volume: 0.20, gate: 0.03, env: { attack: 0.001, decay: 0.075, sustain: 0.05, release: 0.04 } },
-  h: { freq: 9000, volume: 0.06, gate: 0.01, env: { attack: 0.001, decay: 0.022, sustain: 0, release: 0.01 } },
+  K: { freq: 260, volume: 0.30, env: { attack: 0.001, decay: 0.045, sustain: 0, release: 0.02 } },
+  S: { freq: 1900, volume: 0.20, env: { attack: 0.001, decay: 0.075, sustain: 0.05, release: 0.04 } },
+  h: { freq: 9000, volume: 0.06, env: { attack: 0.001, decay: 0.022, sustain: 0, release: 0.01 } },
 };
+
+const drumGate = (drum) => drum.env.attack + drum.env.decay;
 
 function validate(score) {
   const bars = score.lead.length;
@@ -125,11 +129,13 @@ function schedule(score, bpm) {
     [...pattern].forEach((step, i) => {
       if (step === '-') return;
       const drum = DRUMS[step];
+      const gate = drumGate(drum);
       events.push({
         wave: 'noise', pan: 0, short: false,
         ...drum,
         start: (barIndex * TICKS_PER_BAR + i) * tick,
-        duration: drum.gate,
+        duration: gate,
+        gate,
       });
     });
   });

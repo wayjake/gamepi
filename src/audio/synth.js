@@ -48,17 +48,22 @@ class Noise {
 
 // Linear ADSR. `gate` is how long the key is held; the release tail runs past
 // it, which is why voices are rendered with a little slack after their note.
+// Release always starts from the level the envelope had actually reached at
+// the gate -- percussion is gated part-way down its decay, and releasing from
+// `sustain` instead would chop the tail off.
 function envelope(env, t, gate) {
   const { attack = 0.005, decay = 0.05, sustain = 0.7, release = 0.06 } = env;
   if (t < 0) return 0;
-  if (t < gate) {
-    if (t < attack) return t / attack;
-    if (t < attack + decay) return 1 - (1 - sustain) * ((t - attack) / decay);
+
+  const level = (x) => {
+    if (x < attack) return x / attack;
+    if (x < attack + decay) return 1 - (1 - sustain) * ((x - attack) / decay);
     return sustain;
-  }
-  const held = gate < attack ? gate / attack : sustain;
+  };
+
+  if (t < gate) return level(t);
   const r = (t - gate) / release;
-  return r >= 1 ? 0 : held * (1 - r);
+  return r >= 1 ? 0 : level(gate) * (1 - r);
 }
 
 // Renders one note into an oversampled stereo pair of Float32Arrays.
