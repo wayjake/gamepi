@@ -24,6 +24,9 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
   let windowStart = performance.now();
   let windowFrames = 0;
   let windowBusy = 0;
+  let windowDraw = 0;
+  let windowPack = 0;
+  let windowWrite = 0;
   let late = 0;
 
   const stop = (reason) => {
@@ -39,19 +42,26 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
     const began = performance.now();
 
     const t = frame / fps;
-    writer.present(sceneRenderer.render(build(width, height, t)));
+    const canvas = sceneRenderer.render(build(width, height, t));
+    const drawn = performance.now();
+    const cost = writer.present(canvas);
+    const shown = performance.now();
+    windowPack += cost.pack;
+    windowWrite += cost.write;
 
     frame++;
     windowFrames++;
-    windowBusy += performance.now() - began;
+    windowDraw += drawn - began;
+    windowBusy += shown - began;
 
     if (began - windowStart >= 1000) {
       const busy = windowBusy / windowFrames;
       process.stderr.write(
-        `${windowFrames} fps | ${busy.toFixed(1)} ms/frame | ${(100 * busy / period).toFixed(0)}% of budget` +
-        `${late ? ` | ${late} late` : ''}\n`
+        `${windowFrames} fps | ${busy.toFixed(1)} ms/frame ` +
+        `(draw ${(windowDraw / windowFrames).toFixed(1)} + pack ${(windowPack / windowFrames).toFixed(1)} + write ${(windowWrite / windowFrames).toFixed(1)}) ` +
+        `| ${(100 * busy / period).toFixed(0)}% of budget${late ? ` | ${late} late` : ''}\n`
       );
-      [windowStart, windowFrames, windowBusy, late] = [began, 0, 0, 0];
+      [windowStart, windowFrames, windowBusy, windowDraw, windowPack, windowWrite, late] = [began, 0, 0, 0, 0, 0, 0];
     }
 
     if (frame / fps >= seconds) return stop('done');

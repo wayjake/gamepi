@@ -152,9 +152,9 @@ The first working version ran at 19 fps. Measured on the Pi 4, per frame at
 | --- | --- | --- |
 | build scene description | 0.7 ms | 0.7 ms |
 | rasterise | 34.6 ms | 6.5 ms |
-| pack to RGB565 | 15.9 ms | 7.0 ms |
+| pack to RGB565 | 15.9 ms | 2.2 ms |
 | write to /dev/fb0 | 0.3 ms | 0.3 ms |
-| **total** | **51.5 ms (19 fps)** | **14.4 ms (69 fps)** |
+| **total** | **51.5 ms (19 fps)** | **9.7 ms (103 fps)** |
 
 Two changes did it. Limbs were drawn by stepping discs along the skeleton at
 half-pixel spacing, which is obviously correct and enormously wasteful -- the
@@ -170,6 +170,25 @@ Packing was allocating and zeroing a 691 KB buffer every frame and calling
 buffer held open across frames, with a small direct-mapped cache for the colour
 conversion -- flat art uses a handful of distinct colours, so nearly every
 pixel is a cache hit.
+
+### The frame-time step
+
+The loop prints a breakdown every second -- `draw`, `pack`, `write` -- because
+the total on its own hides where a problem is. It earned that early: frame time
+was stepping by 50% mid-run with nothing in the scene changing. Ruled out in
+order: thermal throttling (63-66 C, clock pinned at 1800 MHz, `get_throttled`
+0x0), GC (184 scavenges in 30 s at under 2 ms each, no major collections),
+animation content (rendering cost measured against t is flat -- re-running the
+"most expensive" frame makes it the cheapest), and CPU governor (`ondemand`,
+but never left 1800 MHz).
+
+The breakdown found it: all of it was in `pack`. `node --trace-deopt` named it
+outright -- the function was bailing out of optimised code with "insufficient
+type feedback for generic keyed access", because the hot 16bpp path shared a
+function with 24- and 32-bit branches that never ran. Splitting the hot path
+into `packRGB565` and running it a few times at startup took packing from
+6.1 ms/frame to 2.2 ms, and removed most of the step. What is left is about
+0.6 ms of ordinary tier-up in the first fifteen seconds.
 
 Known limit: there is no vsync. `FBIO_WAITFORVSYNC` needs an ioctl, which pure
 Node can't issue, so a frame can in principle tear. The write is 0.3 ms against
