@@ -13,10 +13,11 @@ const { Canvas, textWidth } = require('./canvas');
 const framebuffer = require('./framebuffer');
 const psf = require('./psf');
 
-const FONT = path.join(__dirname, '..', 'assets', 'Lat15-TerminusBold16.psf.gz');
+const ASSETS = path.join(__dirname, '..', 'assets');
+const DEFAULT_FONT = 'Lat15-TerminusBold16.psf.gz';
 
 function parseArgs(argv) {
-  const opts = { scale: 0, fg: 0xffffff, bg: 0x000000, safe: 0.9, preview: false, info: false, size: null };
+  const opts = { scale: 0, fg: 0xffffff, bg: 0x000000, safe: 0.9, preview: false, info: false, size: null, font: DEFAULT_FONT };
   const words = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -27,6 +28,7 @@ function parseArgs(argv) {
       case '--bg': opts.bg = color(value()); break;
       case '--safe': opts.safe = Number(value()); break;
       case '--size': opts.size = value().split('x').map(Number); break;
+      case '--font': opts.font = value(); break;
       case '--preview': opts.preview = true; break;
       case '--info': opts.info = true; break;
       case '-h': case '--help': usage(0); break;
@@ -44,7 +46,8 @@ const color = (s) => parseInt(s.replace(/^#/, ''), 16) >>> 0;
 function usage(code, msg) {
   if (msg) console.error(msg);
   console.error('usage: message.js [--scale N] [--fg #rrggbb] [--bg #rrggbb] [--safe 0.9]');
-  console.error('                  [--size WxH] [--preview] [--info] "text"');
+  console.error('                  [--size WxH] [--font name.psf.gz] [--preview] [--info] "text"');
+  console.error(`fonts in assets/: ${require('fs').readdirSync(ASSETS).join(', ')}`);
   process.exit(code);
 }
 
@@ -114,7 +117,7 @@ function main() {
   if (!text) usage(1, 'no message given');
   const lines = text.replace(/\\n/g, '\n').split('\n');
 
-  const font = psf.load(FONT);
+  const font = psf.load(path.isAbsolute(opts.font) ? opts.font : path.join(ASSETS, opts.font));
 
   if (opts.preview) {
     const [w, h] = opts.size || [720, 480];
