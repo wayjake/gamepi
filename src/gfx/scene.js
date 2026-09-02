@@ -8,7 +8,7 @@
 // That is exactly how the limbs read in the reference drawing, and it falls out
 // of the ordering rather than needing any outline tracing.
 
-const { Canvas } = require('../canvas');
+const { Canvas, textWidth } = require('../canvas');
 const { PALETTE } = require('./palette');
 const raster = require('./raster');
 
@@ -44,6 +44,29 @@ function render(scene, { width = scene.width, height = scene.height } = {}) {
       for (const shape of shapes) draw(canvas, shape, PALETTE.ink, weight);
       for (const shape of shapes) draw(canvas, shape, shape.fill, 0);
     }
+  }
+
+  // Text sits above the artwork but below the matte, so a label that strays
+  // into the border is cropped like anything else.
+  for (const label of scene.text ?? []) {
+    const scale = label.scale ?? 2;
+    const w = textWidth(scene.font, label.text, scale);
+    const h = scene.font.height * scale;
+    const x = label.anchor === 'end' ? label.x - w : label.anchor === 'middle' ? label.x - w / 2 : label.x;
+    const y = label.baseline === 'bottom' ? label.y - h : label.y;
+    canvas.drawText(scene.font, label.text, Math.round(x), Math.round(y), scale, label.fill ?? PALETTE.cream);
+  }
+
+  // The matte: everything outside the picture rectangle is painted flat, so the
+  // art ends on a deliberate edge rather than running off into whatever the
+  // tube happens to crop.
+  if (scene.matte) {
+    const { x, y, w, h } = scene.matte;
+    const colour = scene.matteColour ?? PALETTE.ink;
+    raster.rect(canvas, 0, 0, width, y, colour);
+    raster.rect(canvas, 0, y + h, width, height - y - h, colour);
+    raster.rect(canvas, 0, y, x, h, colour);
+    raster.rect(canvas, x + w, y, width - x - w, h, colour);
   }
   return canvas;
 }
