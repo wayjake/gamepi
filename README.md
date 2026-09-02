@@ -77,7 +77,8 @@ of the same 3.5 mm jack that carries the video.
 
     scripts/deploy.sh && scripts/pi-run.sh src/play.js --loops 0   # loop on the Pi
     node src/play.js                                               # play on the Mac
-    node src/play.js --wav emberfall.wav                           # write a file
+    node src/play.js --loops 4 --wav emberfall.wav                 # write a file
+    node src/play.js --loops 4 --mp3 emberfall.mp3                 # ...or an mp3
     node src/play.js --bpm 160                                     # try a tempo
 
 The synth (`src/audio/synth.js`) is NES-shaped: two pulse channels, a 16-step
@@ -89,6 +90,10 @@ Scores live in `src/music/` and are written in sixteenth notes: each bar is a
 list of `[note, ticks]` pairs summing to 16. `npm test` asserts that, then
 renders each lead line and measures its pitch back out of the mix to confirm
 the synth plays what the score wrote.
+
+`--mp3` shells out to `lame`, or `ffmpeg` if that's what you have -- macOS
+ships an MP3 decoder but no encoder, and writing one here would dwarf the
+synthesiser. Everything else in the audio path is dependency-free.
 
 Included: **Emberfall**, an overworld theme in D dorian built on a 6-6-4
 tresillo hook that recurs at different pitches and registers.
