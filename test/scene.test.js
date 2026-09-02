@@ -51,20 +51,23 @@ for (const file of fs.readdirSync(SCENES).filter((f) => f.endsWith('.js'))) {
     const at = (x, y) => canvas.px[y * canvas.width + x];
 
     if (scene.matte) {
-      // Nothing but matte may appear outside the picture rectangle -- that is
-      // what makes the border read as a deliberate edge instead of art the
-      // tube happened to crop.
+      // Render again with a sentinel matte colour. Checking against the real
+      // one proves nothing -- it's the same ink the outlines use, and the
+      // background behind it, so a matte that never got painted looks
+      // identical. The sentinel makes "was the matte applied" observable.
+      const sentinel = 0x2b8a3f;
+      const marked = sceneRenderer.render({ ...build(720, 480), matteColour: sentinel });
       const { x, y, w, h } = scene.matte;
-      const colour = scene.matteColour ?? PALETTE.ink;
+
       let strays = 0;
       for (let py = 0; py < 480; py++) {
         for (let px = 0; px < 720; px++) {
           const outside = px < x || px >= x + w || py < y || py >= y + h;
-          if (outside && at(px, py) !== colour) strays++;
+          if (outside && marked.px[py * 720 + px] !== sentinel) strays++;
         }
       }
       assert.strictEqual(strays, 0, `${strays} painted pixels outside the picture rectangle`);
-      assert.notStrictEqual(at(Math.round(x + w / 2), Math.round(y + 8)), colour, 'picture area is empty');
+      assert.notStrictEqual(at(Math.round(x + w / 2), Math.round(y + 8)), PALETTE.ink, 'picture area is empty');
     }
 
     // A long horizontal ink run only one pixel tall lands in a single field of
