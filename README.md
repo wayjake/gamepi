@@ -20,9 +20,12 @@ Developed on a Mac, rsynced to the Pi.
 ## One-time Pi setup
 
 The Pi 4's composite output is off by default. `scripts/pi-setup.sh` turns it on
-by adding the `composite` parameter to the `vc4-kms-v3d` overlay in
+by setting `enable_tvout=1` (the firmware gate) and adding the `composite`
+parameter to the `vc4-kms-v3d` overlay (the kernel gate) in
 `/boot/firmware/config.txt`, and disables console blanking and the blinking
-cursor in `cmdline.txt`.
+cursor in `cmdline.txt`. It also copies any terminfo entries from
+`~/.terminfo` into `/etc/terminfo`, so `sudo nano` works from a terminal the
+Pi doesn't ship a description for (Ghostty, say).
 
     scripts/deploy.sh
     ssh -t jake@gamepi.local 'sudo bash ~/gamePi/scripts/pi-setup.sh && sudo reboot'
@@ -35,6 +38,11 @@ Cabling: the Pi's 3.5&nbsp;mm TRRS jack carries composite video on the **sleeve*
 (the pinout is tip = left audio, ring 1 = right audio, ring 2 = ground, sleeve =
 video). Camcorder cables often use the other common pinout and will give you a
 black screen with audio -- you want a cable sold for the Raspberry Pi or Zune.
+
+If `/dev/fb0` still doesn't exist after the reboot, composite has no hotplug
+detect and the connector may have come up disabled -- force a mode by adding
+`video=Composite-1:720x480@60i` to `cmdline.txt` (same line, space separated)
+and rebooting again.
 
 ## Usage
 
