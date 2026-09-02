@@ -7,11 +7,15 @@
 // visible here. Every scene derives its picture rectangle from this, so one
 // measurement fixes the whole project.
 //
-// Measured on: (uncalibrated -- conservative default)
+// Measured on: a Sharp 13" CRT over composite, 2026-09-02. The top ruler
+// showed 16 just clipped and 24 wasting a visible margin, so 20 splits it; the
+// left ruler showed 40 landing exactly on the edge. Overscan is asymmetric
+// here -- the sides eat twice what the top does, which is why the two axes are
+// measured separately.
 
 const inset = {
-  x: Number(process.env.GAMEPI_INSET_X ?? 56),
-  y: Number(process.env.GAMEPI_INSET_Y ?? 36),
+  x: Number(process.env.GAMEPI_INSET_X ?? 40),
+  y: Number(process.env.GAMEPI_INSET_Y ?? 20),
 };
 
 // The rectangle a scene may draw in. Everything outside it is matte.
