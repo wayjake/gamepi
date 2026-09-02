@@ -8,7 +8,23 @@
 // instead of hiding it.
 
 const sceneRenderer = require('./scene');
+const fs = require('fs');
 const framebuffer = require('../framebuffer');
+
+// The CPU clock, read straight from sysfs. It belongs in the frame report
+// because on a Pi the ondemand governor will happily drop to 1200 MHz while a
+// 30 fps loop is only using a third of one core, and every CPU stage then costs
+// 1.5x more for reasons that have nothing to do with the code. Reading it from
+// inside the process matters: sampling it from a shell loop is itself enough
+// load to hold the governor up and hide the effect.
+const CLOCK = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq';
+function cpuMHz() {
+  try {
+    return Math.round(Number(fs.readFileSync(CLOCK, 'utf8')) / 1000);
+  } catch {
+    return null;
+  }
+}
 
 function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
   const writer = framebuffer.open();
@@ -56,10 +72,12 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
 
     if (began - windowStart >= 1000) {
       const busy = windowBusy / windowFrames;
+      const mhz = cpuMHz();
       process.stderr.write(
         `${windowFrames} fps | ${busy.toFixed(1)} ms/frame ` +
         `(draw ${(windowDraw / windowFrames).toFixed(1)} + pack ${(windowPack / windowFrames).toFixed(1)} + write ${(windowWrite / windowFrames).toFixed(1)}) ` +
-        `| ${(100 * busy / period).toFixed(0)}% of budget${late ? ` | ${late} late` : ''}\n`
+        `| ${(100 * busy / period).toFixed(0)}% of budget` +
+        `${mhz ? ` | cpu ${mhz} MHz` : ''}${late ? ` | ${late} late` : ''}\n`
       );
       [windowStart, windowFrames, windowBusy, windowDraw, windowPack, windowWrite, late] = [began, 0, 0, 0, 0, 0, 0];
     }

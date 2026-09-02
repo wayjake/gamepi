@@ -44,6 +44,28 @@ add_param() {
 add_param consoleblank=0            # stop the console blanking after 10 minutes
 add_param vt.global_cursor_default=0 # no blinking cursor over our pixels
 
+# Pin the CPU governor. The default `ondemand` governor decides a 30 fps render
+# loop using a third of one core is an idle machine and drops from 1800 MHz to
+# 1100, at which point every frame costs 1.5x more. Nothing else on this box
+# wants the power saving.
+cat > /etc/systemd/system/gamepi-performance.service <<'UNIT'
+[Unit]
+Description=Pin the CPU governor to performance for gamePi
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g"; done'
+ExecStop=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo ondemand > "$g"; done'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now gamepi-performance.service >/dev/null 2>&1
+echo "cpu: governor pinned to $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor) (systemctl disable gamepi-performance to undo)"
+
 # `sudo nano` runs with HOME=/root, so a terminfo entry installed into the
 # user's ~/.terminfo isn't visible to it. Install this terminal system-wide.
 if [ -n "${SUDO_USER:-}" ] && [ -d "/home/$SUDO_USER/.terminfo" ]; then
