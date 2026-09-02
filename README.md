@@ -92,3 +92,35 @@ the synth plays what the score wrote.
 
 Included: **Emberfall**, an overworld theme in D dorian built on a 6-6-4
 tresillo hook that recurs at different pitches and registers.
+
+## Scenes
+
+`src/render.js` draws a 2D scene to the framebuffer, or to a PNG so you can
+look at it without a Pi and a CRT in the loop.
+
+    node src/render.js --png out.png            # render at 720x480, on the Mac
+    scripts/deploy.sh && scripts/pi-run.sh src/render.js   # draw it on the CRT
+
+The look -- bold ink outlines, flat vibrant fills -- comes from one rule in
+`src/gfx/scene.js`: within a layer, every shape is drawn twice, all of them in
+ink at `radius + weight` first, then all of them in their own colour at true
+radius. Overlapping shapes weld into a single coloured mass; shapes that come
+close without touching keep a black channel between them. Outlines are never
+traced -- they fall out of the ordering.
+
+Bodies are chains of discs stepped along a polyline with the radius lerped
+between control points (`src/gfx/raster.js`), which is what gives limbs their
+flow and round caps, and what makes the ink pass free.
+
+Two constraints are baked in rather than remembered:
+
+* `src/gfx/palette.js` runs every colour through `ntscSafe`, which clamps luma
+  into broadcast range and desaturates until the decoded RGB stays there.
+  Oversaturated colour makes the chroma subcarrier overshoot, and edges bleed.
+* `npm test` fails on any horizontal ink run one pixel tall and eight or more
+  long -- those land in a single field of a 480i signal and strobe at 30 Hz.
+  It also asserts scenes render deterministically (textures use a seeded PRNG)
+  and paint only palette colours.
+
+Nothing is anti-aliased, on purpose: composite video on a CRT is the filter,
+and hard edges are the style.
