@@ -5,8 +5,12 @@
   "description": "Draw on a Raspberry Pi 4B's composite (RCA) output from Node, with no native dependencies.",
   "main": "src/message.js",
   "scripts": {
+    "test": "node --test",
     "preview": "node src/message.js --preview",
+    "play": "node src/play.js",
     "deploy": "scripts/deploy.sh"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }

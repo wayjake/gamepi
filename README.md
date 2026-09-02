@@ -68,3 +68,27 @@ the framebuffer geometry the Pi reports).
   `sudo systemctl disable --now getty@tty1`.
 * NTSC (720x480i) is the firmware default. For PAL, add `sdtv_mode=2` to
   `config.txt`.
+
+## Music
+
+`src/play.js` renders a chiptune score to PCM in pure JavaScript and pipes it
+to `aplay`, which lands on the `bcm2835 Headphones` card -- the analogue half
+of the same 3.5 mm jack that carries the video.
+
+    scripts/deploy.sh && scripts/pi-run.sh src/play.js --loops 0   # loop on the Pi
+    node src/play.js                                               # play on the Mac
+    node src/play.js --wav emberfall.wav                           # write a file
+    node src/play.js --bpm 160                                     # try a tempo
+
+The synth (`src/audio/synth.js`) is NES-shaped: two pulse channels, a 16-step
+quantised triangle for bass, and a 15-bit LFSR for noise. Everything renders at
+4x oversample and averages down -- raw squares at 44.1 kHz alias audibly on the
+high notes, which the real hardware's analogue output stage never did.
+
+Scores live in `src/music/` and are written in sixteenth notes: each bar is a
+list of `[note, ticks]` pairs summing to 16. `npm test` asserts that, then
+renders each lead line and measures its pitch back out of the mix to confirm
+the synth plays what the score wrote.
+
+Included: **Emberfall**, an overworld theme in D dorian built on a 6-6-4
+tresillo hook that recurs at different pitches and registers.
