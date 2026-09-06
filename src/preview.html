@@ -1,0 +1,584 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gamePi preview</title>
+<!--
+  The dev-machine end of src/preview.js.
+
+  Frames arrive as the RGB565 the Pi's display controller would be reading, and
+  everything below is an attempt to be honest about the four things a PNG on a
+  Mac quietly lies about: pixels are 8/9 as wide as they are tall once 720x480
+  is stretched over a 4:3 tube, the frame is two interlaced fields a 60th of a
+  second apart, the tube crops the edges, and composite carries far less chroma
+  bandwidth than luma. Each is a toggle, because each is worth looking at with
+  the others off.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #14161a; color: #d7dae0;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+           padding: 10px 14px; background: #1c1f25; border-bottom: 1px solid #2b2f37; }
+  main { display: flex; justify-content: center; padding: 24px 14px 40px; }
+  canvas { display: block; background: #000; box-shadow: 0 0 0 1px #2b2f37, 0 18px 50px #0008; }
+  fieldset { display: flex; gap: 12px; align-items: center; margin: 0; padding: 4px 10px;
+             border: 1px solid #2b2f37; border-radius: 6px; }
+  legend { padding: 0 4px; color: #7c828e; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  label { display: flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
+  button, select { font: inherit; color: inherit; background: #262a32; border: 1px solid #363b45;
+                   border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+  button:hover, select:hover { background: #2f343d; }
+  button.on { background: #3f6ea8; border-color: #5285c4; }
+  #scrub { width: 320px; }
+  #at { min-width: 108px; color: #8fd0a0; }
+  #pads { color: #7c828e; }
+  #keys { margin: 0 14px 24px; color: #7c828e; }
+  #padinfo { margin: -16px 14px 24px; color: #7c828e; font-variant-numeric: tabular-nums; }
+  #padinfo b { color: #b6bcc6; font-weight: 600; }
+  #padinfo[hidden] { display: none; }
+  #keys b { color: #b6bcc6; font-weight: 600; }
+  .scene-only[hidden], #keys[hidden] { display: none; }
+  #status { margin-left: auto; color: #7c828e; }
+  .moment { padding: 2px 7px; font-size: 12px; }
+  .why { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%;
+         background: #2b3038; color: #8d949f; font-size: 10px; cursor: help; }
+</style>
+
+<header>
+  <select class="scene-only" id="scene" title="scene module in src/scenes"></select>
+  <button id="play" title="space">pause</button>
+  <button class="scene-only" id="back" title="one frame back">&#9664;|</button>
+  <button class="scene-only" id="fwd" title="one frame on">|&#9654;</button>
+  <input class="scene-only" id="scrub" type="range" min="0" max="30" step="0.01" value="0" title="scrub t">
+  <select class="scene-only" id="fps" title="the Pi runs 30"><option>15</option><option selected>30</option><option>60</option></select>
+  <span id="at">t 0.00s f 0</span>
+  <span class="scene-only" id="moments"></span>
+  <button id="sound" title="browsers won't start audio until you ask">sound off</button>
+  <span id="pads"></span>
+  <span id="status">connecting</span>
+</header>
+
+<main><canvas id="screen"></canvas></main>
+
+<p id="keys" hidden>
+  <b>player 1</b> arrows &middot; <b>Z</b> A &middot; <b>X</b> B &middot; <b>Enter</b> start &nbsp;
+  <b>player 2</b> WASD &middot; <b>Q</b> A &middot; <b>E</b> B &nbsp;
+  <b>Esc</b> back to the selector &nbsp;
+  a gamepad, if one is plugged in, takes over from either.
+</p>
+
+<!-- The browser's half of `game.js --pad-test`: what the pad calls itself, how
+     the browser is reporting it, and what it is sending right now. Button
+     numbering is not standardised, so when a pad comes up wrong this is the
+     only way to find out what it actually sends. -->
+<p id="padinfo" hidden></p>
+
+<fieldset style="margin: 0 14px 24px">
+  <legend>what the tube does to it</legend>
+  <label><input type="checkbox" id="aspect" checked> 4:3 pixels
+    <span class="why" title="720x480 is stretched over a 4:3 tube, so pixels are 8/9 as wide as they are tall. Off shows square pixels, the way a PNG does -- 12.5% too wide.">?</span></label>
+  <label><input type="checkbox" id="fields"> 480i fields
+    <span class="why" title="Alternates which field was last refreshed at 60 Hz. A one-pixel-tall run lives in a single field, so it lights for a 60th and decays for a 60th -- the 30 Hz strobe npm test forbids.">?</span></label>
+  <label><input type="checkbox" id="bleed"> chroma bleed
+    <span class="why" title="Composite carries about a seventh the bandwidth for colour that it does for brightness. Blurs chroma horizontally and leaves luma sharp.">?</span></label>
+  <label><input type="checkbox" id="crop"> crop to picture
+    <span class="why" title="Shows only the safe area the CRT actually displays. Off shows the whole framebuffer with the safe area outlined.">?</span></label>
+  <label>zoom <select id="zoom">
+    <option value="1">1x</option><option value="1.5" selected>1.5x</option><option value="2">2x</option>
+  </select></label>
+</fieldset>
+
+<script>
+'use strict';
+
+const HEADER = 16;
+const $ = (id) => document.getElementById(id);
+const screen = $('screen');
+const ctx = screen.getContext('2d');
+
+// The frame is composed here at its true size and blitted to the visible
+// canvas, which is only ever as big as the rectangle being shown.
+const shelf = document.createElement('canvas');
+const shelfCtx = shelf.getContext('2d', { willReadFrequently: true });
+
+let meta = { width: 720, height: 480, picture: { x: 0, y: 0, w: 720, h: 480 }, fps: 30, moments: [], scenes: [], scene: '' };
+let raw = null;       // expanded RGB, exactly as it came off the wire
+let work = null;      // the same, after whatever filters are switched on
+let fieldA = null;    // even field just refreshed, odd field decaying
+let fieldB = null;    // and the other way round
+let parity = 0;
+let dirty = false;
+
+// 5- and 6-bit channels back out to 8, by bit replication -- what the hardware
+// does, and the reason four palette colours land a hair over the 235 ceiling
+// that ntscSafe went to the trouble of enforcing.
+const T5 = new Uint8Array(32), T6 = new Uint8Array(64);
+for (let i = 0; i < 32; i++) T5[i] = (i << 3) | (i >> 2);
+for (let i = 0; i < 64; i++) T6[i] = (i << 2) | (i >> 4);
+
+function sized(width, height) {
+  shelf.width = width;
+  shelf.height = height;
+  raw = shelfCtx.createImageData(width, height);
+  work = shelfCtx.createImageData(width, height);
+  fieldA = shelfCtx.createImageData(width, height);
+  fieldB = shelfCtx.createImageData(width, height);
+}
+
+function expand(words, out) {
+  const px = out.data;
+  for (let i = 0, o = 0; i < words.length; i++, o += 4) {
+    const w = words[i];
+    px[o] = T5[(w >> 11) & 31];
+    px[o + 1] = T6[(w >> 5) & 63];
+    px[o + 2] = T5[w & 31];
+    px[o + 3] = 255;
+  }
+}
+
+// Composite gives luma about 4.2 MHz and chroma about 0.6 MHz, which is why
+// colour smears sideways across an edge while the edge itself stays put. Split
+// each pixel into luma and two colour differences, blur only the latter along
+// the row, and put it back.
+const TAPS = 4; // half-width, so a 9-pixel window
+function bleedInPlace(image) {
+  const px = image.data, w = image.width, h = image.height;
+  const cb = new Float32Array(w), cr = new Float32Array(w);
+  const y = new Float32Array(w);
+  for (let row = 0; row < h; row++) {
+    const start = row * w * 4;
+    for (let x = 0; x < w; x++) {
+      const o = start + x * 4;
+      const l = 0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2];
+      y[x] = l; cb[x] = px[o + 2] - l; cr[x] = px[o] - l;
+    }
+    for (let x = 0; x < w; x++) {
+      let sb = 0, sr = 0, n = 0;
+      for (let k = -TAPS; k <= TAPS; k++) {
+        const i = x + k;
+        if (i < 0 || i >= w) continue;
+        sb += cb[i]; sr += cr[i]; n++;
+      }
+      const b = sb / n, r = sr / n, l = y[x];
+      const o = start + x * 4;
+      px[o] = Math.max(0, Math.min(255, l + r));
+      px[o + 2] = Math.max(0, Math.min(255, l + b));
+      // Green falls out of the other two: luma is fixed, so it carries whatever
+      // is left once red and blue have taken their share.
+      px[o + 1] = Math.max(0, Math.min(255, (l - 0.299 * (l + r) - 0.114 * (l + b)) / 0.587));
+    }
+  }
+}
+
+// One field was refreshed a 60th of a second ago and the other is decaying.
+const DECAY = 0.45;
+function split(from, even, odd) {
+  const w = from.width, h = from.height;
+  for (let row = 0; row < h; row++) {
+    const lit = row & 1;
+    for (let x = 0; x < w; x++) {
+      const o = (row * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        const v = from.data[o + c];
+        even.data[o + c] = lit ? v * DECAY : v;
+        odd.data[o + c] = lit ? v : v * DECAY;
+      }
+      even.data[o + 3] = odd.data[o + 3] = 255;
+    }
+  }
+}
+
+// Always rebuilt from `raw`, never from the last composition -- otherwise
+// toggling a filter off leaves its work baked into the frame, and holding on a
+// paused frame applies it again on every redraw.
+function compose() {
+  if (!raw) return;
+  work.data.set(raw.data);
+  if ($('bleed').checked) bleedInPlace(work);
+  if ($('fields').checked) split(work, fieldA, fieldB);
+  else { fieldA.data.set(work.data); fieldB.data.set(work.data); }
+  dirty = true;
+}
+
+function paint() {
+  requestAnimationFrame(paint);
+  if (!fieldA) return;
+  const interlaced = $('fields').checked;
+  if (!dirty && !interlaced) return;
+  dirty = false;
+  parity ^= 1;
+
+  shelfCtx.putImageData(interlaced && parity ? fieldB : fieldA, 0, 0);
+
+  const p = meta.picture;
+  const rect = $('crop').checked ? p : { x: 0, y: 0, w: meta.width, h: meta.height };
+  if (screen.width !== rect.w || screen.height !== rect.h) {
+    screen.width = rect.w;
+    screen.height = rect.h;
+  }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(shelf, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+
+  if (!$('crop').checked) {
+    ctx.strokeStyle = 'rgba(90,200,255,.55)';
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
+    ctx.setLineDash([]);
+  }
+
+  // The squeeze onto a 4:3 tube is a continuous stretch, so let the browser
+  // filter it; square pixels are for looking at the pixels, so keep them hard.
+  const squeeze = $('aspect').checked;
+  const zoom = Number($('zoom').value);
+  screen.style.imageRendering = squeeze ? 'auto' : 'pixelated';
+  screen.style.width = Math.round(rect.w * (squeeze ? 8 / 9 : 1) * zoom) + 'px';
+  screen.style.height = Math.round(rect.h * zoom) + 'px';
+}
+
+async function control(action, extra = {}) {
+  const res = await fetch('/control', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action, ...extra }),
+  });
+  apply(await res.json());
+}
+
+function apply(s) {
+  if (!s) return;
+  const sceneChanged = s.scene !== meta.scene || s.scenes?.length !== meta.scenes.length;
+  meta = { ...meta, ...s };
+  if (shelf.width !== meta.width || shelf.height !== meta.height) sized(meta.width, meta.height);
+  const isGame = Boolean(meta.game);
+  for (const el of document.querySelectorAll('.scene-only')) el.hidden = isGame;
+  $('keys').hidden = !isGame;
+  if (isGame) {
+    // The shell reports where the machine is; a running game reports itself
+    // underneath that. Show whichever is the more specific.
+    const inner = meta.inner;
+    const where = inner ? `${meta.game} · ${inner.screen}` : (meta.screen ?? '');
+    const detail = inner?.score ? inner.score.join(' - ')
+      : inner?.strokes !== undefined ? `${inner.strokes} strokes`
+        : '';
+    $('at').textContent = `${where} ${detail}`.trim();
+  }
+
+  $('fps').value = String(meta.fps);
+  $('play').textContent = meta.paused ? 'play' : 'pause';
+  $('play').classList.toggle('on', meta.paused);
+
+  const loop = meta.moments?.length ? Math.max(...meta.moments) + 2 : 30;
+  $('scrub').max = loop.toFixed(2);
+
+  if (sceneChanged) {
+    $('scene').innerHTML = '';
+    for (const name of meta.scenes ?? []) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = name;
+      opt.selected = name === meta.scene;
+      $('scene').append(opt);
+    }
+    $('moments').innerHTML = '';
+    for (const t of meta.moments ?? []) {
+      const b = document.createElement('button');
+      b.className = 'moment';
+      b.textContent = t + 's';
+      b.title = 'a moment this scene asks npm test to check';
+      b.onclick = () => control('seek', { at: t });
+      $('moments').append(b);
+    }
+  }
+}
+
+// Frames arrive back to back on one response; the header says how much of the
+// tail belongs to this one, so hold the remainder and wait for the rest.
+async function stream() {
+  let held = new Uint8Array(0);
+  for (;;) {
+    try {
+      const res = await fetch('/stream');
+      const reader = res.body.getReader();
+      $('status').textContent = 'live';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const merged = new Uint8Array(held.length + value.length);
+        merged.set(held); merged.set(value, held.length);
+        held = merged;
+
+        for (;;) {
+          if (held.length < HEADER) break;
+          const head = new DataView(held.buffer, held.byteOffset, HEADER);
+          const w = head.getUint16(0, true), h = head.getUint16(2, true);
+          const size = HEADER + w * h * 2;
+          if (held.length < size) break;
+          if (shelf.width !== w || shelf.height !== h) sized(w, h);
+          expand(new Uint16Array(held.buffer.slice(held.byteOffset + HEADER, held.byteOffset + size)), raw);
+          meta.frame = head.getUint32(4, true);
+          meta.at = head.getFloat32(8, true);
+          if (!meta.game) {
+            $('at').textContent = `t ${meta.at.toFixed(2)}s f ${meta.frame}`;
+            if (document.activeElement !== $('scrub')) $('scrub').value = meta.at;
+          }
+          compose();
+          held = held.subarray(size);
+        }
+        held = held.slice(); // drop the consumed head of the buffer
+      }
+    } catch (err) {
+      $('status').textContent = 'reconnecting';
+    }
+    $('status').textContent = 'reconnecting';
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Input. A gamepad through the Gamepad API, and a keyboard standing in for one
+// when there isn't a pad about -- src/input.js can't tell the difference and
+// isn't meant to be able to.
+//
+// The two sources are OR'd together and diffed once a frame rather than sent as
+// they happen: otherwise letting go of the stick while the same direction is
+// held on the keyboard would send a release the game shouldn't see. Only
+// changes go over the wire, so a held direction costs two requests, not sixty
+// a second.
+
+const BUTTONS = ['up', 'down', 'left', 'right', 'a', 'b', 'start', 'select', 'home'];
+const KEYS = {
+  ArrowUp: ['p1', 'up'], ArrowDown: ['p1', 'down'], ArrowLeft: ['p1', 'left'], ArrowRight: ['p1', 'right'],
+  KeyZ: ['p1', 'a'], KeyX: ['p1', 'b'], Enter: ['p1', 'start'], ShiftRight: ['p1', 'select'],
+  Escape: ['p1', 'home'], // the star on the pad: straight back to the selector
+  KeyW: ['p2', 'up'], KeyS: ['p2', 'down'], KeyA: ['p2', 'left'], KeyD: ['p2', 'right'],
+  KeyQ: ['p2', 'a'], KeyE: ['p2', 'b'],
+};
+// There are two ways a browser hands over a pad, and gp.mapping says which.
+//
+// `standard` means it has already sorted the buttons into the layout every
+// diagram draws: A and B at 0 and 1, SELECT and START at 8 and 9, the d-pad at
+// 12-15. Anything else is raw HID in whatever order the pad's firmware happens
+// to list its controls, and an 8BitDo in D-input mode -- which is how one
+// arrives out of the box, and which Chrome will not call standard -- lists
+// L2 and R2 at 8 and 9. Exactly the two the standard layout calls SELECT and
+// START. That is this bug: on a raw pad the triggers opened menus, and holding
+// both of them held the shell's quit combo.
+//
+// So a raw pad gets the layout that pad actually reports. Its d-pad is not
+// buttons at all (12-15 there are HOME and the two stick clicks) -- it is a hat
+// on one axis, decoded below.
+const PAD_STANDARD = { 0: 'a', 1: 'b', 8: 'select', 9: 'start', 12: 'up', 13: 'down', 14: 'left', 15: 'right', 16: 'home' };
+const PAD_RAW = { 0: 'a', 1: 'b', 3: 'a', 4: 'b', 10: 'select', 11: 'start', 12: 'home' };
+const HAT_AXIS = 9;
+const STICK_DEADZONE = 0.45;
+
+// A hat sits on one axis in the eight-position encoding HID uses: -1 is up and
+// it works round clockwise in steps of 2/7, with anything off that ring -- the
+// 3.29 a released hat reports -- meaning centred.
+const HAT = [['up'], ['up', 'right'], ['right'], ['down', 'right'],
+             ['down'], ['down', 'left'], ['left'], ['left', 'up']];
+function hatDirections(value) {
+  if (typeof value !== 'number' || Math.abs(value) > 1.05) return [];
+  return HAT[Math.round((value + 1) * 3.5)] ?? [];
+}
+
+const keyHeld = { p1: {}, p2: {} };
+const onWire = new Map();
+const queued = [];
+
+function wants(pad, button, down) {
+  const key = `${pad}:${button}`;
+  if (onWire.get(key) === down) return;
+  onWire.set(key, down);
+  queued.push({ pad, button, down });
+}
+
+let asserting = [];
+
+function pollInput() {
+  const list = navigator.getGamepads ? [...navigator.getGamepads()] : [];
+  const live = list.filter(Boolean);
+
+  ['p1', 'p2'].forEach((pad, i) => {
+    const gp = live[i];
+    const want = {};
+    for (const button of BUTTONS) want[button] = Boolean(keyHeld[pad][button]);
+
+    if (gp) {
+      const raw = gp.mapping !== 'standard';
+      for (const [index, button] of Object.entries(raw ? PAD_RAW : PAD_STANDARD)) {
+        if (gp.buttons[index]?.pressed) want[button] = true;
+      }
+      // Only a raw pad has a hat to read: a standard one has already had its
+      // d-pad turned into buttons 12-15, and axis 9 there could be anything.
+      if (raw && gp.axes.length > HAT_AXIS) {
+        for (const direction of hatDirections(gp.axes[HAT_AXIS])) want[direction] = true;
+      }
+      const [x, y] = [gp.axes[0] ?? 0, gp.axes[1] ?? 0];
+      if (y < -STICK_DEADZONE) want.up = true;
+      if (y > STICK_DEADZONE) want.down = true;
+      if (x < -STICK_DEADZONE) want.left = true;
+      if (x > STICK_DEADZONE) want.right = true;
+    }
+
+    if (pad === 'p1') asserting = BUTTONS.filter((button) => want[button]);
+    for (const button of BUTTONS) wants(pad, button, want[button]);
+  });
+
+  $('pads').textContent = live.length
+    ? `${live.length} gamepad${live.length > 1 ? 's' : ''}`
+    : 'keyboard';
+  padReadout(live[0]);
+
+  if (!queued.length) return;
+  const changes = queued.splice(0, queued.length);
+  fetch('/input', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ changes }),
+  }).catch(() => {});
+}
+
+// What pad 1 is sending, in the pad's own numbers. Press a button that comes up
+// wrong and this line names the index it really is; the maps above are the only
+// place that has to change.
+function padReadout(gp) {
+  const line = $('padinfo');
+  line.hidden = !gp;
+  if (!gp) return;
+
+  const down = gp.buttons.flatMap((b, i) => (b.pressed ? [i] : []));
+  const moved = gp.axes.flatMap((v, i) =>
+    (Math.abs(v) > STICK_DEADZONE && Math.abs(v) <= 1.05 ? [`${i}:${v.toFixed(2)}`] : []));
+
+  line.innerHTML = [
+    `<b>${gp.id.replace(/\s*\(.*/, '')}</b>`,
+    gp.mapping === 'standard' ? 'standard layout' : 'raw layout',
+    `buttons <b>${down.length ? down.join(' ') : '-'}</b>`,
+    `axes <b>${moved.length ? moved.join(' ') : '-'}</b>`,
+    `sending <b>${asserting.length ? asserting.join(' ') : '-'}</b>`,
+  ].join(' &middot; ');
+}
+
+// Arrows scroll and space clicks the focused button, neither of which is wanted
+// while playing.
+const SWALLOW = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Enter']);
+function key(event, down) {
+  if (event.target.tagName === 'SELECT' || event.target.tagName === 'INPUT') return;
+  const mapped = KEYS[event.code];
+  if (!mapped) return;
+  if (SWALLOW.has(event.code)) event.preventDefault();
+  if (event.repeat) return;
+  keyHeld[mapped[0]][mapped[1]] = down;
+}
+window.addEventListener('keydown', (e) => key(e, true));
+window.addEventListener('keyup', (e) => key(e, false));
+// Buttons held when the window loses focus never send their release otherwise,
+// and a paddle carries on into the wall.
+window.addEventListener('blur', () => { keyHeld.p1 = {}; keyHeld.p2 = {}; });
+
+// ---------------------------------------------------------------------------
+// Audio. Blocks of S16_LE stereo arrive on /audio, one per video frame, from
+// the same mixer that feeds aplay on the Pi. They're queued back to back a
+// little ahead of the clock: too small a lead and any hiccup is a gap, too
+// large and the blip lands after the ball has gone.
+
+const RATE = 44100;
+const LEAD = 0.14;
+let actx = null;
+let level = null;
+let nextAt = 0;
+let stopAudio = null;
+
+async function audioStream(signal) {
+  const res = await fetch('/audio', { signal });
+  const reader = res.body.getReader();
+  let spare = new Uint8Array(0);
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const merged = new Uint8Array(spare.length + value.length);
+    merged.set(spare); merged.set(value, spare.length);
+
+    const frames = Math.floor(merged.length / 4);
+    spare = merged.subarray(frames * 4);
+    if (!frames) { spare = spare.slice(); continue; }
+
+    const pcm = new DataView(merged.buffer, merged.byteOffset, frames * 4);
+    const buffer = actx.createBuffer(2, frames, RATE);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < frames; i++) {
+      left[i] = pcm.getInt16(i * 4, true) / 32768;
+      right[i] = pcm.getInt16(i * 4 + 2, true) / 32768;
+    }
+    spare = spare.slice();
+
+    const source = actx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(level);
+    // Fallen behind (a backgrounded tab, a stall) -- rebuild the lead rather
+    // than schedule in the past, which plays everything at once.
+    if (nextAt < actx.currentTime + 0.02) nextAt = actx.currentTime + LEAD;
+    source.start(nextAt);
+    nextAt += frames / RATE;
+  }
+}
+
+async function toggleSound() {
+  if (actx) {
+    stopAudio?.abort();
+    await actx.close().catch(() => {});
+    actx = null; stopAudio = null;
+    $('sound').textContent = 'sound off';
+    $('sound').classList.remove('on');
+    return;
+  }
+  // Has to happen inside the click: a context created any other way starts
+  // suspended and stays that way.
+  actx = new AudioContext({ sampleRate: RATE });
+  await actx.resume();
+  level = actx.createGain();
+  level.gain.value = 0.9;
+  level.connect(actx.destination);
+  nextAt = 0;
+  stopAudio = new AbortController();
+  $('sound').textContent = 'sound on';
+  $('sound').classList.add('on');
+  audioStream(stopAudio.signal).catch(() => {});
+}
+
+$('sound').onclick = toggleSound;
+
+// On its own timer rather than inside paint(): input has nothing to do with
+// drawing, and a browser that throttles requestAnimationFrame -- a background
+// tab, a hidden window -- would otherwise stop reading the pad while the game
+// carried on running.
+setInterval(pollInput, 16);
+
+$('play').onclick = () => control(meta.paused ? 'play' : 'pause');
+$('back').onclick = () => control('step', { by: -1 });
+$('fwd').onclick = () => control('step', { by: 1 });
+$('scene').onchange = (e) => control('scene', { name: e.target.value });
+$('scrub').oninput = (e) => control('seek', { at: Number(e.target.value) });
+$('fps').onchange = (e) => control('fps', { fps: Number(e.target.value) });
+for (const id of ['bleed', 'fields']) $(id).onchange = compose;
+// These only change how the composed frame is presented, but a paused,
+// non-interlaced preview isn't redrawing on its own, so ask for one frame.
+for (const id of ['aspect', 'crop', 'zoom']) $(id).onchange = () => { dirty = true; };
+document.onkeydown = (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+  if (meta.game) return; // the arrows are the player's; don't scrub with them
+  if (e.key === 'ArrowLeft') $('back').click();
+  if (e.key === 'ArrowRight') $('fwd').click();
+};
+
+fetch('/state').then((r) => r.json()).then(apply);
+// A game's readout is its own state, not the frame counter, and nothing in the
+// frame stream carries it. Ask now and then; it is a tiny request.
+setInterval(() => {
+  if (meta.game) fetch('/state').then((r) => r.json()).then(apply).catch(() => {});
+}, 400);
+requestAnimationFrame(paint);
+stream();
+</script>

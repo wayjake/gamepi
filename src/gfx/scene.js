@@ -28,33 +28,85 @@ function draw(canvas, shape, color, grow) {
   }
 }
 
-function render(scene, { width = scene.width, height = scene.height } = {}) {
-  const canvas = new Canvas(width, height);
-  canvas.clear(scene.background ?? PALETTE.cream);
+// Ordered dither, for fading a layer in or out. There is no alpha on a flat
+// poster -- every pixel is one palette colour -- so a fade is a stipple, the
+// way it was done on the consoles this look comes from, and composite video on
+// a CRT blurs it into a real mid-tone. Thresholds are a 4x4 Bayer matrix laid
+// over 2x2 pixel cells rather than single pixels: a cell spans both fields of
+// an interlaced frame, so a half-faded shape shimmers instead of strobing.
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const UNPAINTED = 0xffffffff; // never a colour: colours are 24-bit
+let scratch = null;
 
-  for (const layer of scene.layers) {
-    const shapes = layer.shapes.filter(Boolean);
+function paintLayer(canvas, layer, scene) {
+  const shapes = layer.shapes.filter(Boolean);
 
-    if (layer.flat) {
-      for (const shape of shapes) draw(canvas, shape, shape.fill, 0);
-    } else if (layer.inkOnly) {
-      for (const shape of shapes) draw(canvas, shape, layer.fill ?? PALETTE.ink, 0);
-    } else {
-      const weight = layer.ink ?? scene.ink ?? 6;
-      for (const shape of shapes) draw(canvas, shape, PALETTE.ink, weight);
-      for (const shape of shapes) draw(canvas, shape, shape.fill, 0);
+  if (layer.flat) {
+    for (const shape of shapes) draw(canvas, shape, shape.fill, 0);
+  } else if (layer.inkOnly) {
+    for (const shape of shapes) draw(canvas, shape, layer.fill ?? PALETTE.ink, 0);
+  } else {
+    const weight = layer.ink ?? scene.ink ?? 6;
+    for (const shape of shapes) draw(canvas, shape, PALETTE.ink, weight);
+    for (const shape of shapes) draw(canvas, shape, shape.fill, 0);
+  }
+}
+
+function renderLayer(canvas, layer, scene) {
+  const alpha = layer.alpha ?? 1;
+  if (alpha <= 0) return;
+  const level = Math.round(alpha * 16);
+  if (level <= 0) return;
+  if (level >= 16) return paintLayer(canvas, layer, scene);
+
+  // Paint the layer on its own, then copy across only the pixels whose cell
+  // passes the threshold. The scratch canvas is kept between frames.
+  if (!scratch || scratch.width !== canvas.width || scratch.height !== canvas.height) {
+    scratch = new Canvas(canvas.width, canvas.height);
+  }
+  scratch.clear(UNPAINTED);
+  paintLayer(scratch, layer, scene);
+
+  const src = scratch.px;
+  const dst = canvas.px;
+  const width = canvas.width;
+  for (let y = 0; y < canvas.height; y++) {
+    const rowBits = ((y >> 1) & 3) << 2;
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const c = src[row + x];
+      if (c !== UNPAINTED && BAYER[rowBits | ((x >> 1) & 3)] < level) dst[row + x] = c;
     }
   }
+}
+
+function render(scene, { width = scene.width, height = scene.height } = {}) {
+  const canvas = new Canvas(width, height);
+
+  // A scene may start from a picture instead of a colour. That is how the 3D
+  // renderer joins in: gfx/scene3d.js rasterises into its own canvas, hands it
+  // over as the underlay, and the layers, text and matte below go on top of it
+  // exactly as they would over a flat background. Everything downstream --
+  // the framebuffer, the preview, the invariant checks -- sees an ordinary
+  // scene and needs to know nothing about any of it.
+  if (scene.underlay) canvas.px.set(scene.underlay.px);
+  else canvas.clear(scene.background ?? PALETTE.cream);
+
+  for (const layer of scene.layers) renderLayer(canvas, layer, scene);
 
   // Text sits above the artwork but below the matte, so a label that strays
   // into the border is cropped like anything else.
   for (const label of scene.text ?? []) {
     const scale = label.scale ?? 2;
-    const w = textWidth(scene.font, label.text, scale);
-    const h = scene.font.height * scale;
+    // A label may bring its own font. A scene with one voice sets scene.font
+    // and forgets about it; a menu that wants a heading twice the size of its
+    // body text would otherwise need two passes.
+    const font = label.font ?? scene.font;
+    const w = textWidth(font, label.text, scale);
+    const h = font.height * scale;
     const x = label.anchor === 'end' ? label.x - w : label.anchor === 'middle' ? label.x - w / 2 : label.x;
     const y = label.baseline === 'bottom' ? label.y - h : label.y;
-    canvas.drawText(scene.font, label.text, Math.round(x), Math.round(y), scale, label.fill ?? PALETTE.cream);
+    canvas.drawText(font, label.text, Math.round(x), Math.round(y), scale, label.fill ?? PALETTE.cream);
   }
 
   // The matte: everything outside the picture rectangle is painted flat, so the
@@ -77,4 +129,4 @@ const marks = (chains, r) => chains.map((points) => ({
   points: r === undefined ? points : points.map((p) => ({ ...p, r })),
 }));
 
-module.exports = { render, draw, marks };
+module.exports = { render, draw, marks, BAYER };

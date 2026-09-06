@@ -6,6 +6,11 @@
 // draws the same picture -- at the cost of running slow rather than dropping
 // frames if the renderer can't keep up. The loop reports when that happens
 // instead of hiding it.
+//
+// Where the frames go is the caller's business. By default they go to the Pi's
+// framebuffer; pass a `writer` and they go wherever it likes (src/preview.js
+// streams them to a browser on the dev machine). A writer is anything with
+// `fb: {width, height}`, `present(canvas) -> {pack, write}` and `close()`.
 
 const sceneRenderer = require('./scene');
 const fs = require('fs');
@@ -26,14 +31,15 @@ function cpuMHz() {
   }
 }
 
-function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
-  const writer = framebuffer.open();
-  const { width, height } = writer.fb;
+function run(build, { fps = 30, seconds = Infinity, onStop, writer = null, report = true } = {}) {
+  const out = writer ?? framebuffer.open();
+  const { width, height } = out.fb;
   const period = 1000 / fps;
 
   let frame = 0;
   let timer = null;
   let stopped = false;
+  let paused = false;
   let due = performance.now();
 
   // Rolling stats, reported once a second.
@@ -45,32 +51,43 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
   let windowWrite = 0;
   let late = 0;
 
+  const onSignal = () => stop('interrupted');
+
   const stop = (reason) => {
     if (stopped) return;
     stopped = true;
     clearTimeout(timer);
-    writer.close();
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    out.close();
     if (onStop) onStop(reason, frame);
   };
 
-  const tick = () => {
-    if (stopped) return;
+  // Draws the frame the counter is sitting on. Split out of tick() so that a
+  // paused preview can step or scrub a frame without the scheduling and the
+  // rolling stats coming along with it. Time still comes from the counter, so
+  // a scrubbed frame is the picture playback would have shown at that instant.
+  const renderFrame = () => {
     const began = performance.now();
-
-    const t = frame / fps;
-    const canvas = sceneRenderer.render(build(width, height, t));
+    const canvas = sceneRenderer.render(build(width, height, frame / fps));
     const drawn = performance.now();
-    const cost = writer.present(canvas);
+    const cost = out.present(canvas);
     const shown = performance.now();
-    windowPack += cost.pack;
-    windowWrite += cost.write;
+    return { began, draw: drawn - began, busy: shown - began, pack: cost.pack, write: cost.write };
+  };
+
+  const tick = () => {
+    if (stopped || paused) return;
+    const cost = renderFrame();
 
     frame++;
     windowFrames++;
-    windowDraw += drawn - began;
-    windowBusy += shown - began;
+    windowDraw += cost.draw;
+    windowBusy += cost.busy;
+    windowPack += cost.pack;
+    windowWrite += cost.write;
 
-    if (began - windowStart >= 1000) {
+    if (report && cost.began - windowStart >= 1000) {
       const busy = windowBusy / windowFrames;
       const mhz = cpuMHz();
       process.stderr.write(
@@ -79,7 +96,7 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
         `| ${(100 * busy / period).toFixed(0)}% of budget` +
         `${mhz ? ` | cpu ${mhz} MHz` : ''}${late ? ` | ${late} late` : ''}\n`
       );
-      [windowStart, windowFrames, windowBusy, windowDraw, windowPack, windowWrite, late] = [began, 0, 0, 0, 0, 0, 0];
+      [windowStart, windowFrames, windowBusy, windowDraw, windowPack, windowWrite, late] = [cost.began, 0, 0, 0, 0, 0, 0];
     }
 
     if (frame / fps >= seconds) return stop('done');
@@ -90,11 +107,32 @@ function run(build, { fps = 30, seconds = Infinity, onStop } = {}) {
     timer = setTimeout(tick, due - now);
   };
 
-  process.on('SIGINT', () => stop('interrupted'));
-  process.on('SIGTERM', () => stop('interrupted'));
+  const pause = () => {
+    if (paused || stopped) return;
+    paused = true;
+    clearTimeout(timer);
+  };
+
+  const resume = () => {
+    if (!paused || stopped) return;
+    paused = false;
+    due = performance.now(); // start the schedule from here, don't replay the gap
+    tick();
+  };
+
+  const seek = (n) => {
+    if (stopped) return;
+    frame = Math.max(0, Math.round(n));
+    if (paused) renderFrame(); // playing, and the next tick draws it anyway
+  };
+
+  const state = () => ({ frame, fps, paused, stopped, at: frame / fps });
+
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   tick();
 
-  return { stop };
+  return { stop, pause, resume, seek, state };
 }
 
 module.exports = { run };

@@ -1,3 +1,10 @@
 node_modules/
 *.log
 .DS_Store
+
+# Rendered audio: `--wav` / `--mp3` write these, they are outputs not sources
+*.wav
+*.mp3
+
+# Rendered stills from `--png`
+*.png

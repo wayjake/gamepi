@@ -5,23 +5,15 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { PALETTE, luma } = require('../src/gfx/palette');
+const { PALETTE } = require('../src/gfx/palette');
 const sceneRenderer = require('../src/gfx/scene');
 const png = require('../src/gfx/png');
+const invariants = require('./invariants');
 
 const SCENES = path.join(__dirname, '..', 'src', 'scenes');
-const Y_MIN = 16;
-const Y_MAX = 235;
 
 test('every palette colour is legal for composite video', () => {
-  for (const [name, rgb] of Object.entries(PALETTE)) {
-    const channels = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
-    for (const c of channels) {
-      assert.ok(c >= Y_MIN && c <= Y_MAX, `${name}: channel ${c} outside ${Y_MIN}..${Y_MAX}`);
-    }
-    const y = luma(...channels);
-    assert.ok(y >= Y_MIN - 0.5 && y <= Y_MAX + 0.5, `${name}: luma ${y.toFixed(1)} outside range`);
-  }
+  invariants.ntscLegal();
 });
 
 for (const file of fs.readdirSync(SCENES).filter((f) => f.endsWith('.js'))) {
@@ -53,62 +45,56 @@ for (const file of fs.readdirSync(SCENES).filter((f) => f.endsWith('.js'))) {
     assert.ok(a.equals(b), 'two renders of the same scene differ');
   });
 
+  // A scene may name the moments worth checking -- mid-fall, mid-fade, and so
+  // on -- since t = 0 rarely exercises everything it can draw.
+  const moments = build.moments ?? [0];
+
   test(`${file}: paints only palette colours`, () => {
-    const canvas = sceneRenderer.render(build(720, 480));
-    const allowed = new Set(Object.values(PALETTE));
-    const seen = new Set(canvas.px);
-    for (const colour of seen) {
-      assert.ok(allowed.has(colour), `stray colour #${colour.toString(16).padStart(6, '0')} in the render`);
+    for (const t of moments) {
+      const canvas = sceneRenderer.render(build(720, 480, t));
+      const seen = invariants.paletteOnly(canvas, `${file} at t=${t}`);
+      assert.ok(seen.size >= 3, `flat scene: only ${seen.size} colours used at t=${t}`);
     }
-    assert.ok(seen.size >= 3, `flat scene: only ${seen.size} colours used`);
   });
 
-  test(`${file}: keeps every painted pixel inside the safe area`, () => {
-    const scene = build(720, 480);
+  for (const t of moments) test(`${file}: keeps every painted pixel inside the safe area at t=${t}`, () => {
+    const scene = build(720, 480, t);
     const canvas = sceneRenderer.render(scene);
-    const at = (x, y) => canvas.px[y * canvas.width + x];
+    const where = `${file} at t=${t}`;
 
+    invariants.insideMatte(scene, where);
     if (scene.matte) {
-      // Render again with a sentinel matte colour. Checking against the real
-      // one proves nothing -- it's the same ink the outlines use, and the
-      // background behind it, so a matte that never got painted looks
-      // identical. The sentinel makes "was the matte applied" observable.
-      const sentinel = 0x2b8a3f;
-      const marked = sceneRenderer.render({ ...build(720, 480), matteColour: sentinel });
-      const { x, y, w, h } = scene.matte;
-
-      let strays = 0;
-      for (let py = 0; py < 480; py++) {
-        for (let px = 0; px < 720; px++) {
-          const outside = px < x || px >= x + w || py < y || py >= y + h;
-          if (outside && marked.px[py * 720 + px] !== sentinel) strays++;
-        }
-      }
-      assert.strictEqual(strays, 0, `${strays} painted pixels outside the picture rectangle`);
+      // A scene is a full-bleed illustration, so the top of the picture is a
+      // fair place to ask whether anything got drawn at all.
+      const { x, y, w } = scene.matte;
+      const at = (px, py) => canvas.px[py * canvas.width + px];
       assert.notStrictEqual(at(Math.round(x + w / 2), Math.round(y + 8)), PALETTE.ink, 'picture area is empty');
     }
-
-    // A long horizontal ink run only one pixel tall lands in a single field of
-    // an interlaced signal, so it strobes at 30 Hz. The apex of a curve is
-    // unavoidably one pixel tall, but it is also only a few pixels wide -- what
-    // matters is a *run*, so only flag those.
-    const MIN_FLICKER_LENGTH = 8;
-    const offenders = [];
-    for (let y = 1; y < 479; y++) {
-      let run = 0;
-      for (let x = 0; x < 720; x++) {
-        const thin = at(x, y) === PALETTE.ink
-          && at(x, y - 1) !== PALETTE.ink
-          && at(x, y + 1) !== PALETTE.ink;
-        if (thin) {
-          run++;
-        } else {
-          if (run >= MIN_FLICKER_LENGTH) offenders.push(`${run}px at y=${y}`);
-          run = 0;
-        }
-      }
-      if (run >= MIN_FLICKER_LENGTH) offenders.push(`${run}px at y=${y}`);
-    }
-    assert.deepStrictEqual(offenders, [], `1px-tall ink runs will flicker on an interlaced field: ${offenders.slice(0, 5).join(', ')}`);
+    invariants.noFlicker(canvas, where);
   });
 }
+
+test('a layer with alpha dithers in proportion, in cells two pixels tall', () => {
+  const rect = { type: 'rect', x: 100, y: 100, w: 64, h: 64, fill: PALETTE.ink };
+  const at = (alpha) => sceneRenderer.render({
+    width: 320, height: 240, background: PALETTE.cream,
+    layers: [{ flat: true, alpha, shapes: [rect] }],
+  });
+  const inked = (canvas) => canvas.px.reduce((n, c) => n + (c === PALETTE.ink ? 1 : 0), 0);
+
+  assert.strictEqual(inked(at(0)), 0, 'alpha 0 painted something');
+  assert.strictEqual(inked(at(1)), 64 * 64, 'alpha 1 dithered a solid layer');
+  assert.strictEqual(inked(at(0.5)), 64 * 64 / 2, 'alpha 0.5 is not half the pixels');
+  assert.strictEqual(inked(at(0.25)), 64 * 64 / 4, 'alpha 0.25 is not a quarter of the pixels');
+
+  // Every dithered pixel needs a painted neighbour above or below it: a lone
+  // scanline of stipple sits in one field of the interlaced signal and flickers.
+  const half = at(0.5);
+  for (let y = 100; y < 164; y++) {
+    for (let x = 100; x < 164; x++) {
+      if (half.px[y * 320 + x] !== PALETTE.ink) continue;
+      const pair = half.px[(y - 1) * 320 + x] === PALETTE.ink || half.px[(y + 1) * 320 + x] === PALETTE.ink;
+      assert.ok(pair, `single-field pixel at ${x},${y}`);
+    }
+  }
+});

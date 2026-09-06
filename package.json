@@ -2,11 +2,13 @@
   "name": "gamepi",
   "version": "0.1.0",
   "private": true,
-  "description": "Draw on a Raspberry Pi 4B's composite (RCA) output from Node, with no native dependencies.",
+  "description": "Pure-Node graphics, software 3D, chiptune audio and games for a Raspberry Pi 4B's composite (RCA) output.",
   "main": "src/message.js",
   "scripts": {
     "test": "node --test",
     "preview": "node src/message.js --preview",
+    "serve": "node src/render.js --serve",
+    "game": "node src/game.js --serve",
     "play": "node src/play.js",
     "deploy": "scripts/deploy.sh"
   },
