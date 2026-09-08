@@ -94,8 +94,12 @@ echo "modules: hidp and joydev loaded, and set to load at boot"
 cat > /etc/systemd/system/gamepi-bluetooth.service <<'UNIT'
 [Unit]
 Description=Unblock the Bluetooth radio for gamePi's pad
+# Ordering only. Wants= here would start bluetoothd as a side effect of a boot
+# task whose whole job is to run before it, and on a Pi with the radio off in
+# config.txt that is not wanted at all. A Before= on a unit nobody enabled is
+# inert, which is the right thing to be.
+After=systemd-rfkill.service
 Before=bluetooth.service
-Wants=bluetooth.service
 
 [Service]
 Type=oneshot
@@ -106,8 +110,13 @@ ExecStart=/usr/sbin/rfkill unblock bluetooth
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now gamepi-bluetooth.service >/dev/null 2>&1
-echo "bluetooth: radio unblocked (systemctl disable gamepi-bluetooth to undo)"
+# --now propagates the oneshot's exit status, and `rfkill unblock` fails when
+# there is no radio to unblock. Not a reason to take the rest of the setup down.
+if systemctl enable --now gamepi-bluetooth.service >/dev/null 2>&1; then
+  echo "bluetooth: radio unblocked (systemctl disable gamepi-bluetooth to undo)"
+else
+  echo "bluetooth: no radio to unblock -- skipped"
+fi
 
 # `sudo nano` runs with HOME=/root, so a terminfo entry installed into the
 # user's ~/.terminfo isn't visible to it. Install this terminal system-wide.
