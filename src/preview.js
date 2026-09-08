@@ -12,10 +12,39 @@
 
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const framebuffer = require('./framebuffer');
 
 const CLIENT = path.join(__dirname, 'preview.html');
+
+// A frame is 675 KB of RGB565, which is 166 Mbit/s at 30 fps -- fine down a
+// loopback socket, hopeless over wifi to a phone. Flat poster colours deflate
+// about thirty to one at level 1 and cost half a millisecond, so a client that
+// isn't on this machine gets the stream gzipped and reads about 5 Mbit/s
+// instead. Level 1 rather than 6 on purpose: 6 is another 2x for five times the
+// CPU, and this runs beside the frame loop.
+const GZIP_LEVEL = 1;
+
+// Everything that isn't a socket on this machine.
+function remote(req) {
+  const ip = req.socket.remoteAddress ?? '';
+  return !(ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1');
+}
+
+// Where a phone on the same wifi can reach this. The hostname first, because
+// `jake.local` survives a DHCP lease that a printed address doesn't.
+function addresses(port) {
+  const host = os.hostname();
+  const names = [host.includes('.') ? host : `${host}.local`];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const net of list ?? []) {
+      if (net.family === 'IPv4' && !net.internal) names.push(net.address);
+    }
+  }
+  return names.map((name) => `http://${name}:${port}/`);
+}
 
 // Frame header, little-endian, ahead of width*height*2 bytes of RGB565:
 //   0  uint16 width      8  float32 t (seconds)
@@ -29,7 +58,9 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
   // A framebuffer that doesn't exist: composite on a Pi 4B comes up 16bpp with
   // no padding, and describing it here rather than reading sysfs is what lets
   // the same packing code run on a Mac.
-  const fb = { device: 'preview', path: `http://${host}:${port}`, width, height, bpp: 16, stride: width * 2 };
+  // 0.0.0.0 is a bind, not somewhere to point a browser.
+  const shown = (h) => (h === '0.0.0.0' || h === '::' ? '127.0.0.1' : h);
+  const fb = { device: 'preview', path: `http://${shown(host)}:${port}`, width, height, bpp: 16, stride: width * 2 };
 
   // Made once, like framebuffer.open() does, and for the same reason.
   const buf = Buffer.alloc(fb.stride * fb.height);
@@ -49,16 +80,18 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
   function broadcast(to, payload) {
     for (const client of to) {
       if (client.behind) continue;
-      client.behind = !client.res.write(payload);
+      client.behind = !client.write(payload);
     }
   }
 
   // A chunked binary response that stays open. Both streams are this.
-  function subscribe(req, res, to) {
+  function subscribe(req, res, to, { compress = false } = {}) {
+    const gzip = compress && /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
       'cache-control': 'no-store',
       'x-accel-buffering': 'no',
+      ...(gzip ? { 'content-encoding': 'gzip' } : {}),
     });
     // Node holds headers back until the first body write, so a client that
     // connects between frames would sit there looking disconnected -- and a
@@ -67,10 +100,31 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
     res.flushHeaders();
     res.socket?.setNoDelay(true); // frames are latency, not throughput
 
-    const client = { res, behind: false };
+    // Deflating happens on the threadpool, so the frame loop never waits on it,
+    // and each frame is flushed rather than left to fill a block: a stream that
+    // buffers holds a frame back until the next one arrives, which is a frame
+    // of latency bought for nothing. Backpressure is still read off the socket
+    // -- the gzip stream drains long before the wifi does.
+    const zip = gzip ? zlib.createGzip({ level: GZIP_LEVEL }) : null;
+    zip?.pipe(res);
+    // A phone that walks out of range is an EPIPE on this stream, and an
+    // unhandled one takes the whole console down with it.
+    zip?.on('error', () => { to.delete(client); zip.destroy(); });
+
+    const client = {
+      res,
+      behind: false,
+      write: zip
+        ? (payload) => {
+          zip.write(payload);
+          zip.flush(zlib.constants.Z_SYNC_FLUSH);
+          return !res.writableNeedDrain;
+        }
+        : (payload) => res.write(payload),
+    };
     res.on('drain', () => { client.behind = false; });
     to.add(client);
-    req.on('close', () => to.delete(client));
+    req.on('close', () => { to.delete(client); zip?.destroy(); });
   }
 
   const server = http.createServer((req, res) => {
@@ -86,7 +140,14 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
       return res.end(JSON.stringify(snapshot()));
     }
 
-    if (url.pathname === '/stream') return subscribe(req, res, clients);
+    // Frames compress; PCM doesn't, so audio goes down the wire as it is.
+    // Anything off this machine gets it compressed, `?gzip` asks for it anyway
+    // -- a phone coming down a tunnel arrives looking like loopback -- and
+    // `?raw` is the way out if a browser turns out to sit on a gzip stream.
+    if (url.pathname === '/stream') {
+      const compress = !url.searchParams.has('raw') && (url.searchParams.has('gzip') || remote(req));
+      return subscribe(req, res, clients, { compress });
+    }
     if (url.pathname === '/audio') return subscribe(req, res, ears);
 
     // Pad changes from the page: the browser's Gamepad API, or a keyboard
@@ -176,7 +237,10 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
     address: () => server.address(),
     // A function, not a string: with port 0 the real port isn't known until
     // the listen callback has run.
-    url: () => `http://${host}:${server.address()?.port ?? port}/`,
+    url: () => `http://${shown(host)}:${server.address()?.port ?? port}/`,
+    // The same server as somewhere else on the network can see it. Empty
+    // unless it was told to listen on more than loopback.
+    urls: () => (host === '0.0.0.0' || host === '::' ? addresses(server.address()?.port ?? port) : []),
     listeners: () => ({ frames: clients.size, audio: ears.size }),
     shutdown() {
       for (const client of [...clients, ...ears]) client.res.end();
@@ -190,4 +254,4 @@ function open({ port = 7480, host = '127.0.0.1', width = 720, height = 480,
   };
 }
 
-module.exports = { open, HEADER };
+module.exports = { open, HEADER, addresses };

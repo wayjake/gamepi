@@ -20,7 +20,7 @@ const preview = require('./preview');
 const safearea = require('./gfx/safearea');
 
 function parseArgs(argv) {
-  const opts = { scene: 'overlook', png: null, size: null, animate: false, fps: 30, seconds: Infinity, at: 0, serve: false, port: 7480, open: true };
+  const opts = { scene: 'overlook', png: null, size: null, animate: false, fps: 30, seconds: Infinity, at: 0, serve: false, port: 7480, host: '127.0.0.1', open: true };
   for (let i = 0; i < argv.length; i++) {
     const value = () => argv[++i];
     switch (argv[i]) {
@@ -33,6 +33,8 @@ function parseArgs(argv) {
       case '--at': opts.at = Number(value()); break;
       case '--serve': opts.serve = true; break;
       case '--port': opts.port = Number(value()); break;
+      case '--lan': opts.host = '0.0.0.0'; break;
+      case '--host': opts.host = value(); break;
       case '--no-open': opts.open = false; break;
       case '-h': case '--help': usage(0); break;
       default: usage(1, `unknown option: ${argv[i]}`);
@@ -45,7 +47,7 @@ function usage(code, msg) {
   if (msg) console.error(msg);
   console.error('usage: render.js [--scene name] [--png file] [--size WxH] [--at seconds]');
   console.error('                 [--animate] [--fps N] [--seconds N]');
-  console.error('                 [--serve] [--port N] [--no-open]');
+  console.error('                 [--serve] [--lan] [--port N] [--no-open]');
   console.error(`scenes: ${fs.readdirSync(scenes).map((f) => f.replace(/\.js$/, '')).join(', ')}`);
   process.exit(code);
 }
@@ -81,6 +83,7 @@ async function serve(opts) {
 
   const view = preview.open({
     port: opts.port,
+    host: opts.host,
     width,
     height,
     clock: () => (show ? show.state().at : 0),
@@ -118,6 +121,7 @@ async function serve(opts) {
   await view.listening;
   start(opts.scene);
   console.error(`preview: ${view.url()}  (${width}x${height}, RGB565, Ctrl-C to stop)`);
+  for (const url of view.urls()) console.error(`         ${url}   on this network`);
   if (opts.open && process.platform === 'darwin') {
     require('child_process').spawn('open', [view.url()], { stdio: 'ignore', detached: true }).unref();
   }

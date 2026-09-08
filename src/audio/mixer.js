@@ -22,6 +22,7 @@ const MAX_VOICES = 12;
 function create({ master = 0.8, musicGain = 0.55 } = {}) {
   let voices = [];
   let bed = null;
+  let live = null;
 
   const start = (sound, gain) => ({ left: sound.left, right: sound.right, pos: 0, gain });
 
@@ -53,12 +54,24 @@ function create({ master = 0.8, musicGain = 0.55 } = {}) {
       bed = sound ? start(sound, gain) : null;
     },
 
+    // A bed that is generated rather than looped: anything with
+    // pull(left, right, frames) that adds its own block into the accumulators.
+    // audio/rack.js is the one, and it exists because a ten minute piece whose
+    // parts come and go cannot be a pre-rendered buffer. A live source replaces
+    // the bed rather than sitting beside it -- there is still only one thing
+    // playing under the game.
+    live(source) {
+      live = source ?? null;
+      if (source) bed = null;
+    },
+
     silence() {
       bed = null;
+      live = null;
     },
 
     get playing() {
-      return { voices: voices.length, music: Boolean(bed) };
+      return { voices: voices.length, music: Boolean(bed), live: Boolean(live) };
     },
 
     // One block. Always exactly `frames` frames, silence included -- the sink
@@ -68,6 +81,7 @@ function create({ master = 0.8, musicGain = 0.55 } = {}) {
       const accR = new Float32Array(frames);
 
       if (bed) mixInto(accL, accR, bed, frames, true);
+      if (live) live.pull(accL, accR, frames);
       for (const voice of voices) mixInto(accL, accR, voice, frames, false);
       voices = voices.filter((voice) => voice.pos < voice.left.length);
 

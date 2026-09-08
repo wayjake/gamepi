@@ -36,11 +36,13 @@ function farmhand(game) {
   const tap = (b) => { pads.p1.set(b, true); step(1); pads.p1.set(b, false); step(1); };
   const settle = () => { let g = 0; while ((game.state().moving || game.state().acting || game.state().card) && g++ < 200) step(1); };
   const face = (dir) => { if (game.state().dir !== dir) { pads.p1.set(dir, true); step(1); pads.p1.set(dir, false); step(1); } };
-  // Six frames: one to turn, three for the turn delay, two into the step. Any
-  // longer and the held stick chains a second step.
+  // A turn is only ever a turn, so a step is two gestures: face the way you
+  // are going, let the stick come back to neutral, then lean again. One frame
+  // of lean starts the step; any longer and the held stick chains a second.
   const move = (dir) => {
     const from = game.state().at.join(',');
-    step(6, { [dir]: true });
+    face(dir);
+    step(1, { [dir]: true });
     step(1, { [dir]: false });
     settle();
     return game.state().at.join(',') !== from;
@@ -158,6 +160,38 @@ test('meadowlark: the door, the bin, the stall and the water can all be reached 
   assert.ok(['fill', 'none'].includes(game.state().intent));
   assert.ok(hand.approach(8, 2), 'the pond');
   assert.strictEqual(game.state().target.ground, 'water');
+});
+
+// Turning and walking are two gestures, not one gesture timed two ways: the
+// tile you are aiming at is usually the one you mean to plant in.
+test('meadowlark: a change of direction is only that, however long the stick is held', () => {
+  const { game, hand } = start();
+  const at = () => game.state().at.join(',');
+  const home = at();
+  assert.strictEqual(game.state().dir, 'down');
+  assert.ok(game.walkable(3, 4), 'the tile east of the start is not clear');
+
+  // Lean east from a standstill: the farmer turns and stays where they are,
+  // for as long as anyone cares to hold it.
+  hand.step(60, { right: true });
+  assert.strictEqual(game.state().dir, 'right');
+  assert.strictEqual(at(), home, 'the turn walked the farmer off the tile');
+
+  // Let the stick come back and lean again, and now it is a step.
+  hand.step(1, { right: false });
+  hand.step(1, { right: true });
+  hand.step(1, { right: false });
+  hand.settle();
+  assert.notStrictEqual(at(), home, 'a second lean in the way already faced did not walk');
+
+  // Mid-walk it is the same rule: swinging the stick a new way finishes the
+  // step under way and then only turns.
+  hand.step(20, { right: true });
+  hand.step(60, { right: false, down: true });
+  assert.strictEqual(game.state().dir, 'down');
+  const south = at();
+  hand.step(60, { down: true });
+  assert.strictEqual(at(), south, 'a turn out of a walk went on walking');
 });
 
 test('meadowlark: the seed scatters different rocks on different farms, never on the plot or the paths', () => {

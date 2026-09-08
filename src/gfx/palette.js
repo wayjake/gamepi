@@ -82,8 +82,62 @@ for (const name of ['moss', 'bark', 'sun', 'ember', 'sky', 'cream', 'rose', 'vio
   RAMP[name].forEach((colour, i) => { PALETTE[`${name}${STEPS[i]}`] = colour; });
 }
 
+// Shadow theatre, for src/games/tallow.js.
+//
+// Every other game here is the poster look: ink grown under a flat fill. That
+// one is fill only -- a lit linen sheet with cut-paper silhouettes on it, and
+// value doing the work an outline usually does. It needs two colours the
+// poster palette cannot supply.
+//
+// `shade` is what a puppet takes *out* of the light, and it is deliberately not
+// `ink`: ink is an outline colour, and an outline is the one thing that look
+// may not have. `soot` is the room around the sheet, so the matte reads as the
+// edge of a lamp rather than as a letterbox.
+//
+// The lamp is a five-step ramp rather than the three the 3D side uses. Three
+// steps are flat on purpose, which is right for a poster and wrong for a light
+// source: a lamp behind cloth is a gradient, and the scene renderer's ordered
+// dither blends the joins into one on a CRT.
+const LAMP_BASE = 0xe8d8b4;
+const LAMP_FACTORS = [0.38, 0.55, 0.75, 1, 1.14];
+const LAMP = LAMP_FACTORS.map((k) => ntscSafe(scale(LAMP_BASE, k)));
+LAMP.forEach((colour, i) => { PALETTE[`lamp${i}`] = colour; });
+
+PALETTE.linen = LAMP[3];          // the sheet at its own brightness
+PALETTE.shade = ntscSafe(0x16121a);
+PALETTE.soot = ntscSafe(0x2a2018);
+
+
+// Washes, for src/games/halcyon.js.
+//
+// The poster palette is nine flat colours that hold an edge; a sky is the one
+// thing it cannot draw, because a sky is a gradient and every ramp here is
+// three steps of one hue. These are five steps that change hue as they climb
+// -- indigo to plum to amber, or black-green to pale cyan -- which is what a
+// sky actually does and what no amount of scaling one base colour will give
+// you. The scene renderer's ordered dither blends the joins on a CRT, the same
+// trick the lamp in tallow.js uses.
+//
+// One wash per piece: it is the whole of that piece's identity on screen, and
+// the visualiser draws sky, hills, sun and every part's marks out of these five
+// and nothing else.
+const WASHES = {
+  dawn: [0x241f33, 0x4a3352, 0x8f4f58, 0xd4894b, 0xf2d69c],
+  frost: [0x151d2b, 0x1f3a50, 0x2f6a78, 0x62a8ac, 0xcfe4dc],
+  harvest: [0x201a18, 0x4a2b22, 0x8a4a26, 0xc9853a, 0xecd3a0],
+};
+
+const WASH = {};
+for (const [name, steps] of Object.entries(WASHES)) {
+  WASH[name] = steps.map((rgb, i) => {
+    const colour = ntscSafe(rgb);
+    PALETTE[`${name}${i}`] = colour;
+    return colour;
+  });
+}
+
 // Lambert term (0..1) to a step. Flat, deliberately: the bands are the look.
 const SHADE_STEPS = FACTORS.length;
 const step = (light) => Math.min(SHADE_STEPS - 1, Math.max(0, Math.round(light * (SHADE_STEPS - 1))));
 
-module.exports = { PALETTE, RAMP, ntscSafe, luma, step, SHADE_STEPS };
+module.exports = { PALETTE, RAMP, LAMP, WASH, ntscSafe, luma, step, SHADE_STEPS };

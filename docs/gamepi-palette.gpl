@@ -1,0 +1,57 @@
+GIMP Palette
+Name: gamePi
+Columns: 3
+# 720x480 composite-safe. Every pixel you paint must be one of these.
+# Index 0 below is reserved by the engine as transparent -- do not paint it.
+  0   0   0	TRANSPARENT (reserved)
+ 16  16  16	ink
+235 232 224	cream
+155 153 148	creamDim
+235 235 235	creamLit
+235 193  45	sun
+155 127  30	sunDim
+235 233 180	sunLit
+232  65  47	ember
+153  43  31	emberDim
+235  91  71	emberLit
+234  97 166	rose
+154  64 110	roseDim
+235 136 203	roseLit
+154 111 212	violet
+102  73 140	violetDim
+191 149 235	violetLit
+111 179 222	sky
+ 73 118 147	skyDim
+168 220 235	skyLit
+ 63 181 107	moss
+ 42 119  71	mossDim
+ 81 232 137	mossLit
+ 70 178 107	turf
+ 46 117  71	turfDim
+ 90 228 137	turfLit
+ 47 127  78	rough
+ 31  84  51	roughDim
+ 60 163 100	roughLit
+ 79 156  74	leaf
+ 52 103  49	leafDim
+101 200  95	leafLit
+143  90  44	bark
+ 94  59  29	barkDim
+183 115  56	barkLit
+154 160 166	stone
+102 106 110	stoneDim
+197 205 212	stoneLit
+216 180 109	sand
+143 119  72	sandDim
+235 228 203	sandLit
+ 63 127 196	water
+ 42  84 129	waterDim
+ 92 161 235	waterLit
+ 88  82  68	lamp0
+128 119  99	lamp1
+174 162 135	lamp2
+232 216 180	lamp3
+235 235 233	lamp4
+232 216 180	linen
+ 22  18  26	shade
+ 42  32  24	soot

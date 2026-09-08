@@ -1,6 +1,14 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>gamePi preview</title>
+<!-- A phone is a legitimate client: same server, same frames, same /input.
+     viewport-fit=cover so the picture goes under the notch rather than beside
+     it, no user scaling because every pinch on a d-pad would be one. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="gamePi">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
 <!--
   The dev-machine end of src/preview.js.
 
@@ -39,6 +47,55 @@
   .scene-only[hidden], #keys[hidden] { display: none; }
   #status { margin-left: auto; color: #7c828e; }
   .moment { padding: 2px 7px; font-size: 12px; }
+
+  /* --- the phone ------------------------------------------------------------
+     Three shapes of client off the one page, picked by ?play / ?tv / ?pad or by
+     the pointer being a finger: the dev panel, the picture filling the screen
+     (what you mirror to a television), and the picture with a touchscreen pad
+     over it. ?pad is the last one without the picture at all -- the phone as
+     nothing but a controller, for when the television is showing the game
+     itself. None of it is a different client: it all goes down the same
+     /input the keyboard uses. */
+  body.full { height: 100dvh; overflow: hidden; overscroll-behavior: none; background: #000; }
+  body.full header, body.full #keys, body.full #padinfo, body.full fieldset { display: none; }
+  body.full main { position: fixed; inset: 0; padding: 0; background: #000; align-items: center; }
+  body.full canvas { box-shadow: none; }
+  body.pad-only main { display: none; }
+  /* Landscape has room for thumbs in the corners of the picture; portrait
+     doesn't, so the pad gets its own strip and the picture the rest. */
+  body.full.touching.portrait main { bottom: 40vh; }
+
+  #leave { position: fixed; z-index: 6; opacity: .3;
+           top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); }
+  body:not(.full) #leave { display: none; }
+
+  #touch { position: fixed; inset: 0; z-index: 5; pointer-events: none;
+           touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  #touch > * { position: absolute; pointer-events: auto; }
+  #stick { left: max(16px, env(safe-area-inset-left)); bottom: max(20px, env(safe-area-inset-bottom));
+           width: 36vmin; height: 36vmin; max-width: 220px; max-height: 220px; border-radius: 50%;
+           background: #ffffff12; border: 1px solid #ffffff2b; touch-action: none;
+           display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); place-items: center; }
+  #stick b { color: #ffffff4d; font-size: 17px; font-weight: 400; }
+  #stick b.lit { color: #8fd0a0; }
+  #stick b[data-dir="up"] { grid-area: 1 / 2; }
+  #stick b[data-dir="left"] { grid-area: 2 / 1; }
+  #stick b[data-dir="right"] { grid-area: 2 / 3; }
+  #stick b[data-dir="down"] { grid-area: 3 / 2; }
+  #face { right: max(16px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom));
+          display: flex; gap: 12px; align-items: flex-end; }
+  #menu { left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom));
+          display: flex; gap: 10px; opacity: .55; }
+  #link { left: 50%; transform: translateX(-50%); top: max(10px, env(safe-area-inset-top));
+          color: #7c828e; font-size: 12px; }
+  body:not(.pad-only) #link { display: none; }
+  .key { width: 18vmin; height: 18vmin; max-width: 88px; max-height: 88px; border-radius: 50%;
+         background: #ffffff14; border: 1px solid #ffffff2b; color: #d7dae0; font: inherit;
+         font-size: 15px; touch-action: none; }
+  .key[data-button="a"] { transform: translateY(-16px); }
+  .key:hover { background: #ffffff14; }
+  .key.down, .key.down:hover { background: #3f6ea8cc; border-color: #5285c4; }
+  .key.small { width: auto; height: auto; border-radius: 13px; padding: 7px 13px; font-size: 12px; transform: none; }
   .why { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%;
          background: #2b3038; color: #8d949f; font-size: 10px; cursor: help; }
 </style>
@@ -52,12 +109,36 @@
   <select class="scene-only" id="fps" title="the Pi runs 30"><option>15</option><option selected>30</option><option>60</option></select>
   <span id="at">t 0.00s f 0</span>
   <span class="scene-only" id="moments"></span>
-  <button id="sound" title="browsers won't start audio until you ask">sound off</button>
+  <button id="sound" title="on by default; a browser only lets it start once you've clicked the page">click for sound</button>
+  <button id="tv" title="picture only, filling the screen -- the mode to mirror to a television">tv</button>
+  <button id="pad" title="a touchscreen pad over the picture, for a phone">pad</button>
   <span id="pads"></span>
   <span id="status">connecting</span>
 </header>
 
-<main><canvas id="screen"></canvas></main>
+<main id="stage"><canvas id="screen"></canvas></main>
+
+<button id="leave" title="back to the panel">&#9776;</button>
+
+<!-- The console's other half when the machine is a phone: a d-pad read as eight
+     sectors off where the thumb actually is, two face buttons, and the three
+     the shell wants. Everything here sets the same held-button set the keyboard
+     does, so src/input.js still cannot tell what is pressing it. -->
+<div id="touch" hidden>
+  <span id="link">controller</span>
+  <div id="stick">
+    <b data-dir="up">&#9650;</b><b data-dir="left">&#9664;</b><b data-dir="right">&#9654;</b><b data-dir="down">&#9660;</b>
+  </div>
+  <div id="face">
+    <button class="key" data-button="b">B</button>
+    <button class="key" data-button="a">A</button>
+  </div>
+  <div id="menu">
+    <button class="key small" data-button="select">SELECT</button>
+    <button class="key small" data-button="start">START</button>
+    <button class="key small" data-button="home">&#9733;</button>
+  </div>
+</div>
 
 <p id="keys" hidden>
   <b>player 1</b> arrows &middot; <b>Z</b> A &middot; <b>X</b> B &middot; <b>Enter</b> start &nbsp;
@@ -100,7 +181,27 @@ const ctx = screen.getContext('2d');
 const shelf = document.createElement('canvas');
 const shelfCtx = shelf.getContext('2d', { willReadFrequently: true });
 
+// Which of the three clients this is. `full` is the picture with the panel
+// out of the way, `touching` is the on-screen pad, `padOnly` is the pad with no
+// picture at all. A finger gets the phone treatment unless told otherwise;
+// ?page forces the panel back on a tablet that would rather have it.
+const params = new URLSearchParams(location.search);
+const FINGER = matchMedia('(pointer: coarse)').matches;
+const LOCAL = ['localhost', '127.0.0.1', '::1', ''].includes(location.hostname);
+const padOnly = params.has('pad');
+const paged = params.has('page');
+let full = padOnly || params.has('play') || params.has('tv') || (FINGER && !paged);
+let touching = padOnly || params.has('play') || (FINGER && !paged && !params.has('tv'));
+let cropWas = null;
+let stageBox = null;    // measured when the window moves, not once a frame
+
 let meta = { width: 720, height: 480, picture: { x: 0, y: 0, w: 720, h: 480 }, fps: 30, moments: [], scenes: [], scene: '' };
+// A frame is 675 KB of RGB565 and deflates about thirty to one, which is the
+// difference between wifi carrying this and not. The server compresses for
+// anything that isn't on its machine on its own; asking for it explicitly is
+// for a phone arriving down a tunnel, which looks local from there.
+const STREAM = params.has('raw') ? '/stream?raw=1' : LOCAL ? '/stream' : '/stream?gzip=1';
+
 let raw = null;       // expanded RGB, exactly as it came off the wire
 let work = null;      // the same, after whatever filters are switched on
 let fieldA = null;    // even field just refreshed, odd field decaying
@@ -210,7 +311,11 @@ function paint() {
   shelfCtx.putImageData(interlaced && parity ? fieldB : fieldA, 0, 0);
 
   const p = meta.picture;
-  const rect = $('crop').checked ? p : { x: 0, y: 0, w: meta.width, h: meta.height };
+  // Filling a screen means being a television, and a television shows the safe
+  // area -- not the whole framebuffer with a dashed line round the bit that
+  // survives. The checkbox is put back the way it was on the way out.
+  const cropped = full || $('crop').checked;
+  const rect = cropped ? p : { x: 0, y: 0, w: meta.width, h: meta.height };
   if (screen.width !== rect.w || screen.height !== rect.h) {
     screen.width = rect.w;
     screen.height = rect.h;
@@ -218,7 +323,7 @@ function paint() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(shelf, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
 
-  if (!$('crop').checked) {
+  if (!cropped) {
     ctx.strokeStyle = 'rgba(90,200,255,.55)';
     ctx.setLineDash([4, 4]);
     ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
@@ -228,9 +333,16 @@ function paint() {
   // The squeeze onto a 4:3 tube is a continuous stretch, so let the browser
   // filter it; square pixels are for looking at the pixels, so keep them hard.
   const squeeze = $('aspect').checked;
-  const zoom = Number($('zoom').value);
+  const wide = rect.w * (squeeze ? 8 / 9 : 1);
+  let zoom = Number($('zoom').value);
+  if (full) {
+    // Whatever <main> has been left: the pad takes the bottom of a portrait
+    // screen, and the safe-area insets take the notch.
+    const box = stageBox ?? $('stage').getBoundingClientRect();
+    zoom = Math.min(box.width / wide, box.height / rect.h);
+  }
   screen.style.imageRendering = squeeze ? 'auto' : 'pixelated';
-  screen.style.width = Math.round(rect.w * (squeeze ? 8 / 9 : 1) * zoom) + 'px';
+  screen.style.width = Math.round(wide * zoom) + 'px';
   screen.style.height = Math.round(rect.h * zoom) + 'px';
 }
 
@@ -295,7 +407,7 @@ async function stream() {
   let held = new Uint8Array(0);
   for (;;) {
     try {
-      const res = await fetch('/stream');
+      const res = await fetch(STREAM);
       const reader = res.body.getReader();
       $('status').textContent = 'live';
       for (;;) {
@@ -381,6 +493,14 @@ function hatDirections(value) {
 }
 
 const keyHeld = { p1: {}, p2: {} };
+// The on-screen pad, always player one. Three sets rather than one because a
+// tap can begin and end between two polls -- 16 ms apart, and a quick thumb is
+// quicker than that. `fresh` is what hasn't been sampled yet, and `linger`
+// holds a press that was let go before any poll saw it for exactly one poll,
+// so the menu moves. src/input.js latches the edge from there.
+const touchDown = new Set();
+const fresh = new Set();
+const linger = new Set();
 const onWire = new Map();
 const queued = [];
 
@@ -400,7 +520,10 @@ function pollInput() {
   ['p1', 'p2'].forEach((pad, i) => {
     const gp = live[i];
     const want = {};
-    for (const button of BUTTONS) want[button] = Boolean(keyHeld[pad][button]);
+    for (const button of BUTTONS) {
+      const touched = pad === 'p1' && (touchDown.has(button) || linger.has(button));
+      want[button] = Boolean(keyHeld[pad][button] || touched);
+    }
 
     if (gp) {
       const raw = gp.mapping !== 'standard';
@@ -422,6 +545,9 @@ function pollInput() {
     if (pad === 'p1') asserting = BUTTONS.filter((button) => want[button]);
     for (const button of BUTTONS) wants(pad, button, want[button]);
   });
+  // Everything on screen has now been looked at once, which is all a tap asks.
+  fresh.clear();
+  linger.clear();
 
   $('pads').textContent = live.length
     ? `${live.length} gamepad${live.length > 1 ? 's' : ''}`
@@ -434,7 +560,10 @@ function pollInput() {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ changes }),
-  }).catch(() => {});
+  }).then(() => { $('link').textContent = 'controller'; })
+    // A pad with nothing to press stays on screen looking exactly like a pad
+    // that works, so say which it is. Nothing else on this page would.
+    .catch(() => { $('link').textContent = 'offline'; });
 }
 
 // What pad 1 is sending, in the pad's own numbers. Press a button that comes up
@@ -473,7 +602,93 @@ window.addEventListener('keydown', (e) => key(e, true));
 window.addEventListener('keyup', (e) => key(e, false));
 // Buttons held when the window loses focus never send their release otherwise,
 // and a paddle carries on into the wall.
-window.addEventListener('blur', () => { keyHeld.p1 = {}; keyHeld.p2 = {}; });
+window.addEventListener('blur', () => { keyHeld.p1 = {}; keyHeld.p2 = {}; letGo(); });
+
+// ---------------------------------------------------------------------------
+// The touchscreen pad. Buttons are pointer captures, so a finger that slides
+// off one still releases it; the d-pad is read as eight sectors off where the
+// thumb is rather than as four buttons, because a thumb between two directions
+// means both of them and that is how you drive.
+
+const DIRS = ['up', 'down', 'left', 'right'];
+const DEAD = 0.22;      // of the pad's radius: a thumb resting in the middle is not a direction
+
+function hold(button, down) {
+  if (down) { touchDown.add(button); fresh.add(button); linger.delete(button); return; }
+  touchDown.delete(button);
+  if (fresh.has(button)) linger.add(button);   // let go before a poll saw it: hold it one poll
+}
+
+function letGo() {
+  touchDown.clear(); fresh.clear(); linger.clear();
+  owners.clear();
+  thumb = null;
+  for (const key of document.querySelectorAll('.key')) key.classList.remove('down');
+  for (const mark of $('stick').children) mark.classList.remove('lit');
+}
+
+// Which finger is holding what, so a release can be taken on the window rather
+// than on the button. Pointer capture is asked for and never relied on: some
+// pointers cannot be captured at all, and a press that throws on the way in is
+// a button that never comes back up.
+const owners = new Map();
+const grab = (el, id) => { try { el.setPointerCapture(id); } catch { /* a nicety, not the mechanism */ } };
+
+for (const key of document.querySelectorAll('.key')) {
+  const button = key.dataset.button;
+  key.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    hold(button, true);
+    key.classList.add('down');
+    owners.set(e.pointerId, () => { key.classList.remove('down'); hold(button, false); });
+    grab(key, e.pointerId);
+  });
+  key.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+const stick = $('stick');
+let thumb = null;
+
+function aim(event) {
+  const box = stick.getBoundingClientRect();
+  const dx = (event.clientX - (box.left + box.width / 2)) / (box.width / 2);
+  const dy = (event.clientY - (box.top + box.height / 2)) / (box.height / 2);
+  const held = [];
+  if (Math.hypot(dx, dy) > DEAD) {
+    // Screen angles: 0 is right and it goes clockwise, so each direction owns
+    // three of the eight sectors and the corners fall in two.
+    const a = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+    if (a > 202.5 && a < 337.5) held.push('up');
+    if (a > 22.5 && a < 157.5) held.push('down');
+    if (a > 112.5 && a < 247.5) held.push('left');
+    if (a < 67.5 || a > 292.5) held.push('right');
+  }
+  for (const dir of DIRS) hold(dir, held.includes(dir));
+  for (const mark of stick.children) mark.classList.toggle('lit', held.includes(mark.dataset.dir));
+}
+
+stick.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  thumb = e.pointerId;
+  aim(e);
+  owners.set(e.pointerId, () => {
+    thumb = null;
+    for (const dir of DIRS) hold(dir, false);
+    for (const mark of stick.children) mark.classList.remove('lit');
+  });
+  grab(stick, e.pointerId);
+});
+stick.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Both of these are on the window: a thumb that slides off the pad is still
+// steering, and a finger that lifts somewhere else has still let go.
+addEventListener('pointermove', (e) => { if (e.pointerId === thumb) aim(e); });
+for (const event of ['pointerup', 'pointercancel']) {
+  addEventListener(event, (e) => { owners.get(e.pointerId)?.(); owners.delete(e.pointerId); });
+}
+
+// A finger down when the app goes away never sends its release, same as a key.
+document.addEventListener('visibilitychange', () => { if (document.hidden) letGo(); });
 
 // ---------------------------------------------------------------------------
 // Audio. Blocks of S16_LE stereo arrive on /audio, one per video frame, from
@@ -482,11 +697,17 @@ window.addEventListener('blur', () => { keyHeld.p1 = {}; keyHeld.p2 = {}; });
 // large and the blip lands after the ball has gone.
 
 const RATE = 44100;
-const LEAD = 0.14;
+// A 140 ms lead is plenty down a loopback socket and not enough for a phone's
+// radio, where a stall arrives as a gap in the music rather than a late blip.
+const LEAD = LOCAL ? 0.14 : 0.3;
 let actx = null;
 let level = null;
 let nextAt = 0;
 let stopAudio = null;
+// Sound is on unless the button says otherwise; `actx` is whether it actually
+// got to open, which is not the same thing until the page has been clicked.
+let wanted = !padOnly;   // a controller has nothing to play: the sound is where the picture is
+let opening = false;
 
 async function audioStream(signal) {
   const res = await fetch('/audio', { signal });
@@ -524,30 +745,104 @@ async function audioStream(signal) {
   }
 }
 
-async function toggleSound() {
-  if (actx) {
-    stopAudio?.abort();
-    await actx.close().catch(() => {});
-    actx = null; stopAudio = null;
-    $('sound').textContent = 'sound off';
-    $('sound').classList.remove('on');
-    return;
+function showSound() {
+  const button = $('sound');
+  button.textContent = !wanted ? 'sound off' : actx ? 'sound on' : 'click for sound';
+  button.classList.toggle('on', Boolean(actx));
+}
+
+async function startSound() {
+  if (actx || opening) return;
+  opening = true;
+  const ctx = new AudioContext({ sampleRate: RATE });
+  await ctx.resume().catch(() => {});
+  opening = false;
+  // Blocked (nothing on the page has been clicked yet) or turned off while the
+  // context was opening. Throw it away; the next gesture tries again. The
+  // stream is only started once the clock is really running -- queueing blocks
+  // against a suspended context banks up every one of them, and resuming then
+  // plays back however long the page sat there.
+  if (!wanted || ctx.state !== 'running') {
+    await ctx.close().catch(() => {});
+    return showSound();
   }
-  // Has to happen inside the click: a context created any other way starts
-  // suspended and stays that way.
-  actx = new AudioContext({ sampleRate: RATE });
-  await actx.resume();
+  actx = ctx;
   level = actx.createGain();
   level.gain.value = 0.9;
   level.connect(actx.destination);
   nextAt = 0;
   stopAudio = new AbortController();
-  $('sound').textContent = 'sound on';
-  $('sound').classList.add('on');
+  showSound();
   audioStream(stopAudio.signal).catch(() => {});
 }
 
-$('sound').onclick = toggleSound;
+async function stopSound() {
+  stopAudio?.abort();
+  const dead = actx;
+  actx = null; stopAudio = null;
+  showSound();
+  await dead?.close().catch(() => {});
+}
+
+$('sound').onclick = () => {
+  wanted = !wanted;
+  showSound();
+  return wanted ? startSound() : stopSound();
+};
+
+// On from the start, but a browser won't run an AudioContext until the page
+// has been interacted with, so the first click or key is what actually opens
+// it. Both listeners stay: startSound() is a no-op once it is open, and the
+// button turning sound off sets `wanted` false, which they honour.
+if (wanted) startSound();
+for (const event of ['pointerdown', 'keydown']) {
+  window.addEventListener(event, () => { if (wanted) startSound(); });
+}
+
+// ---------------------------------------------------------------------------
+// Switching between the three clients. Nothing here talks to the server: it is
+// all which parts of this page are on screen.
+
+function layout() {
+  const body = document.body;
+  body.classList.toggle('full', full);
+  body.classList.toggle('touching', touching);
+  body.classList.toggle('pad-only', padOnly);
+  body.classList.toggle('portrait', innerHeight > innerWidth);
+  $('touch').hidden = !touching;
+  $('tv').classList.toggle('on', full);
+  $('pad').classList.toggle('on', touching);
+  if (full && cropWas === null) { cropWas = $('crop').checked; $('crop').checked = true; }
+  if (!full && cropWas !== null) { $('crop').checked = cropWas; cropWas = null; }
+  if (!touching) letGo();
+  stageBox = $('stage').getBoundingClientRect();
+  keepAwake();
+  dirty = true;
+}
+
+// A phone playing a game is a phone nobody is touching, and it locks itself
+// half a minute in. Not every browser has this, and none of them mind being
+// asked twice.
+let awake = null;
+async function keepAwake() {
+  if (!full || awake || !navigator.wakeLock || document.hidden) return;
+  try {
+    awake = await navigator.wakeLock.request('screen');
+    awake.addEventListener('release', () => { awake = null; });
+  } catch { awake = null; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
+addEventListener('resize', layout);
+addEventListener('orientationchange', layout);
+
+$('tv').onclick = () => { full = !full; if (!full) touching = FINGER && touching; layout(); };
+$('pad').onclick = () => { touching = !touching; layout(); };
+// A controller has no picture to go back to, so its way out is the whole page
+// again rather than a panel with a blank canvas in it.
+$('leave').onclick = padOnly
+  ? () => { location.search = ''; }
+  : () => { full = false; touching = false; layout(); };
+layout();
 
 // On its own timer rather than inside paint(): input has nothing to do with
 // drawing, and a browser that throttles requestAnimationFrame -- a background
@@ -580,5 +875,8 @@ setInterval(() => {
   if (meta.game) fetch('/state').then((r) => r.json()).then(apply).catch(() => {});
 }, 400);
 requestAnimationFrame(paint);
-stream();
+// A controller-only phone never opens the frame stream: it is the one client
+// that would be paying for a picture it isn't showing.
+if (!padOnly) stream();
+else $('status').textContent = 'controller';
 </script>

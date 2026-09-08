@@ -10,6 +10,7 @@ const sceneRenderer = require('../src/gfx/scene');
 const input = require('../src/input');
 const invariants = require('./invariants');
 const manifest = require('../src/manifest');
+const mixerLib = require('../src/audio/mixer');
 const { PALETTE } = require('../src/gfx/palette');
 
 const GAMES = path.join(__dirname, '..', 'src', 'games');
@@ -235,6 +236,49 @@ test('the shell plays the attract theme, and hands music over to a game', () => 
 
   drive.tap('a');
   assert.notStrictEqual(machine.music(), undefined, 'a running game must say what it wants playing');
+});
+
+// game.js only ever talks to the shell, so anything a game can be asked that
+// the shell does not forward is a thing that silently does nothing the moment
+// the game is reached through the selector rather than driven directly. That is
+// exactly how halcyon shipped mute the first time: its own tests drove it
+// straight and it played, and there was no test that went the long way round.
+test('the shell answers everything game.js asks of a game', () => {
+  const machine = shell.create(720, 480, { scores: fakeTable() });
+  for (const method of ['update', 'scene', 'drain', 'music', 'stream', 'state']) {
+    assert.strictEqual(typeof machine[method], 'function', `the shell cannot be asked ${method}()`);
+  }
+  // And every game answers the ones it is required to.
+  for (const file of fs.readdirSync(GAMES).filter((f) => f.endsWith('.js'))) {
+    const game = require(path.join(GAMES, file)).create(720, 480, { scores: fakeTable(), seed: 1 });
+    for (const method of ['update', 'scene', 'drain', 'music', 'state']) {
+      assert.strictEqual(typeof game[method], 'function', `${file} cannot be asked ${method}()`);
+    }
+  }
+});
+
+test('a game that brings its own instrument is heard through the shell', () => {
+  const machine = shell.create(720, 480, { scores: fakeTable() });
+  assert.strictEqual(machine.stream(), null, 'the selector has a bed, not a live source');
+
+  machine.launch('halcyon');
+  const drive = driver(machine);
+  drive.step(2);
+  const source = machine.stream();
+  assert.ok(source && typeof source.pull === 'function', 'the shell dropped the running game\'s live source');
+  assert.strictEqual(machine.music(), null, 'a game with its own instrument must not also ask for a track');
+
+  // Driven the way src/game.js drives it, right through to the samples: a
+  // silent block here is a silent television.
+  const mixer = mixerLib.create();
+  mixer.live(source);
+  let peak = 0;
+  for (let f = 0; f < 90; f++) {
+    machine.update(STEP, { p1: input.idle(), p2: input.idle() });
+    const block = mixer.pull(1470);
+    for (let i = 0; i < 1470; i++) peak = Math.max(peak, Math.abs(block.readInt16LE(i * 4) / 32768));
+  }
+  assert.ok(peak > 0.02, `the live source came through the mixer as silence (peak ${peak.toFixed(4)})`);
 });
 
 test('sounds from the shell and the running game both come out', () => {

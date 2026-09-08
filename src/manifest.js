@@ -26,10 +26,13 @@ const PLAYERS = [1, 2];
 // most, and one you would rather nobody stumbled into from the selector.
 const RATINGS = ['pg', '13', 'nsfw'];
 
-// Where the sound comes from. Everything here is `8-bit` today -- rendered as
-// PCM in JS by audio/synth.js -- and `wav` is for the day something ships a
-// recorded sample, which is a different answer to "can this run with no files".
-const AUDIO = ['8-bit', 'wav'];
+// Where the sound comes from. `8-bit` is audio/synth.js -- four hard-edged
+// channels rendered to PCM and looped. `synth` is audio/rack.js, which is a
+// different instrument rather than a louder one: band-limited analogue voices
+// rendered live, one block per video frame, with the parts under the player's
+// hands. `wav` is for the day something ships a recorded sample, which is a
+// different answer to "can this run with no files".
+const AUDIO = ['8-bit', 'synth', 'wav'];
 
 // What the picture is made of. `3d-low` is flat-shaded triangles off
 // gfx/scene3d.js; `3d-high` is nothing yet and would need a renderer that does
@@ -42,7 +45,7 @@ const FIELDS = ['players', 'rating', 'audio', 'graphics'];
 // worth using, so these are the shapes a label actually takes.
 const LABELS = {
   rating: { pg: 'PG', 13: '13+', nsfw: 'NSFW' },
-  audio: { '8-bit': '8-BIT', wav: 'SAMPLED' },
+  audio: { '8-bit': '8-BIT', synth: 'SYNTH', wav: 'SAMPLED' },
   graphics: { '2d': '2D', '3d-low': '3D LOW POLY', '3d-high': '3D' },
 };
 

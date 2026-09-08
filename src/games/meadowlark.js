@@ -77,7 +77,6 @@ const BREAD = 15;              // what Wren charges to feed you a winter day
 const COST = { hoe: 2, can: 1, sickle: 1, axe: 3, hammer: 3, spade: 3, seed: 0.5, harvest: 0.5, sprinkler: 1 };
 const ACT_TIME = { hoe: 0.4, can: 0.5, sickle: 0.35, axe: 0.45, hammer: 0.45, spade: 0.45, seed: 0.35, harvest: 0.5, sprinkler: 0.35, clear: 0.35 };
 const STEP_TIME = 0.2;         // seconds to cross one tile
-const TURN_DELAY = 0.09;       // a tap turns; a hold this long walks
 
 // --- the map -----------------------------------------------------------------
 //
@@ -351,7 +350,7 @@ function create(width = 720, height = 480, options = {}) {
     note: null,      // a line for the hint bar, and how long it has left
     act: null,       // the tool swing in progress
     move: null,      // the step in progress
-    held: 0,         // how long the stick has been leaned in the facing direction
+    turned: false,   // this lean has already been spent turning
     card: 0,         // the day card's timer
     handBump: 0,
     night: null,     // the sleep sequence
@@ -965,6 +964,12 @@ function create(width = 720, height = 480, options = {}) {
   }
   const confirmed = (frame) => frame.pressed.a || frame.pressed.start;
 
+  // A lean that changes which way the farmer is facing does only that. Turning
+  // and walking used to be told apart by how long the stick was held, so the
+  // same flick sometimes aimed at a tile and sometimes stepped onto it -- and
+  // the tile you are aiming at is usually the one you want to plant in. So a
+  // turn spends the lean: the stick has to come back to neutral before it can
+  // walk. Lean in the direction already faced and the step starts that frame.
   function walk(dt, frame) {
     const p = farm.player;
     if (game.move) {
@@ -975,10 +980,9 @@ function create(width = 720, height = 480, options = {}) {
       } else return;
     }
     const want = Object.keys(DIRS).find((d) => frame[d]);
-    if (!want) { game.held = 0; return; }
-    if (want !== p.dir) { p.dir = want; game.held = 0; return; }
-    game.held += dt;
-    if (game.held < TURN_DELAY) return;
+    if (!want) { game.turned = false; return; }
+    if (want !== p.dir) { p.dir = want; game.turned = true; return; }
+    if (game.turned) return;
     const [dc, dr] = DIRS[want];
     if (!walkable(p.c + dc, p.r + dr)) return;
     game.move = { from: { c: p.c, r: p.r }, c: p.c + dc, r: p.r + dr, t: 0 };

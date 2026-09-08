@@ -34,7 +34,7 @@ const speaker = require('./audio/speaker');
 
 function parseArgs(argv) {
   const opts = {
-    game: null, fps: 30, serve: false, port: 7480, open: true,
+    game: null, fps: 30, serve: false, port: 7480, host: '127.0.0.1', open: true,
     device: null, pads: ['/dev/input/js0', '/dev/input/js1'], padTest: false,
     mute: false, seed: null, list: false,
   };
@@ -45,6 +45,10 @@ function parseArgs(argv) {
       case '--fps': opts.fps = Number(value()); break;
       case '--serve': opts.serve = true; break;
       case '--port': opts.port = Number(value()); break;
+      // Off the loopback, so a phone on the same wifi can play it -- and, with
+      // the phone mirrored to a television, so can a room.
+      case '--lan': opts.host = '0.0.0.0'; break;
+      case '--host': opts.host = value(); break;
       case '--no-open': opts.open = false; break;
       case '--device': opts.device = value(); break;
       case '--pad': opts.pads = [value(), ...opts.pads.slice(1)]; break;
@@ -62,7 +66,7 @@ function parseArgs(argv) {
 
 function usage(code, msg) {
   if (msg) console.error(msg);
-  console.error('usage: game.js [--serve] [--port N] [--no-open] [--fps N] [--game name]');
+  console.error('usage: game.js [--serve] [--lan] [--port N] [--no-open] [--fps N] [--game name]');
   console.error('               [--pad /dev/input/js0] [--pad2 ...] [--pad-test] [--mute] [--seed N]');
   console.error('       game.js --list');
   console.error(`games: ${fs.readdirSync(games).map((f) => f.replace(/\.js$/, '')).join(', ')}`);
@@ -95,6 +99,10 @@ const TRACKS = {
   // src/games/knuckles.js.
   recess: 'recess', homeroom: 'homeroom', gymclass: 'gymclass', fieldday: 'fieldday',
   assembly: 'assembly', detention: 'detention',
+  // Tallow: the title theme, and the two halves of a performance -- the mixer
+  // has one bed, so a room warming up is a change of track rather than a layer
+  // coming in. See music() in src/games/tallow.js.
+  tallow: 'tallow', lamplight: 'lamplight', warmth: 'warmth',
 };
 
 function loadAudio(mute) {
@@ -111,6 +119,7 @@ function loadAudio(mute) {
 function driver(game, { fps, pads, mixer, sounds, tracks, sink }) {
   const step = 1 / fps;
   let playing = null;
+  let streaming = null;
   let owed = 0; // fractional samples, so a non-integer block size can't drift
 
   return () => {
@@ -118,7 +127,18 @@ function driver(game, { fps, pads, mixer, sounds, tracks, sink }) {
 
     for (const name of game.drain()) mixer.play(sounds[name]);
 
-    const wanted = game.music();
+    // A game may bring its own instrument instead of naming a track. halcyon
+    // does: audio/rack.js renders one block per video frame, so what plays is
+    // decided in the same frame the picture is, and the parts can be switched
+    // in and out of it while it runs. Everything else names a track and never
+    // learns this exists.
+    const source = game.stream ? game.stream() : null;
+    if (source !== streaming) {
+      streaming = source;
+      mixer.live(source);
+    }
+
+    const wanted = source ? null : game.music();
     if (wanted !== playing) {
       playing = wanted;
       mixer.music(wanted ? tracks[wanted] ?? null : null);
@@ -203,6 +223,7 @@ async function serve(opts) {
   let show = null;
   const view = preview.open({
     port: opts.port,
+    host: opts.host,
     width,
     height,
     clock: () => (show ? show.state().at : 0),
@@ -238,6 +259,8 @@ async function serve(opts) {
   show = stage.run(build, { fps: opts.fps, writer: view.writer, report: false });
 
   console.error(`gamePi: ${view.url()}  (Ctrl-C to stop)`);
+  for (const url of view.urls()) console.error(`        ${url}?play   on this network -- phone, touchscreen pad`);
+  if (view.urls().length) console.error('        add ?pad to use a phone as the controller only, ?tv for a screen with no controls');
   if (opts.open && process.platform === 'darwin') {
     require('child_process').spawn('open', [view.url()], { stdio: 'ignore', detached: true }).unref();
   }

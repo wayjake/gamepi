@@ -23,6 +23,11 @@ There is no install, build, or lint step.
     node src/game.js --serve --game golf            # skip the selector while developing
     node src/game.js --serve --game meadowlark      # the farm; it saves to ~/.gamepi/meadowlark.json
     node src/game.js --serve --game kingpin        # the town with a camera (border's Refugio is the other)
+    node src/game.js --serve --game halcyon       # the music machine: three ten-minute pieces
+    node src/perform.js --info                    # a piece's arrangement, on paper
+    node src/perform.js --from 3:20 --for 40      # audition one section of it
+    node src/perform.js --piece harvest --wav out.wav   # ...or write the lot, or --stems dir/
+    node src/perform.js --bench                   # what one frame of it costs
     node src/game.js --pad-test                     # print what a gamepad sends (Pi only)
     node src/game.js --list                         # the shelf: every game and its manifest
     scripts/deploy.sh                               # rsync to the Pi (PI=user@host to override)
@@ -41,6 +46,8 @@ Two independent pipelines share nothing but the CLI style.
 **3D:** `gfx/mesh.js` builds flat-shaded triangle meshes -> `gfx/scene3d.js` rasterises them into a reusable target with a 1/z depth buffer -> the result goes into an ordinary scene as `scene.underlay`, and the 2D layers, text and matte draw on top. Nothing downstream knows 3D exists.
 
 **Isometric:** `gfx/iso.js` paints 2:1 diamond tiles straight into a canvas (`grid()` for the projection, `fill()` for a tile) which a game hands to the renderer as `scene.underlay`, exactly as the 3D side does. Tiles partition the plane exactly, so a field of one colour has no seams.
+
+**Long-form audio:** `music/pieces/*.js` is a *piece* (an arrangement, not a loop) -> `audio/piece.js` validates it, builds a bar timeline and expands one bar of notes at a time -> `audio/rack.js` renders those notes live through eight stems of analogue-style voices built on `audio/tone.js`, one block per video frame -> `audio/mixer.js` takes it as a live bed, or `perform.js` writes it to a file. Only `games/halcyon.js` uses this side.
 
 **Audio:** `music/*.js` is a score → `audio/song.js` validates it and expands it into note events (lead from the score, bass and arpeggio derived from the chord list, drums from the pattern strings) → `audio/synth.js` renders each event at 4x oversample and downsamples → `play.js` streams the PCM to aplay/afplay or writes WAV/MP3.
 
@@ -61,15 +68,83 @@ A scene module exports `build(width, height, t)` (t in seconds) returning
 `stage.run(build, { writer })` sends frames to any object with `fb: {width, height}`, `present(canvas) -> {pack, write}` and `close()`. There are two:
 
 - `framebuffer.js` (`open()`) -- the Pi. Holds the fd and the packing buffer across frames; see the hot-path rules below.
-- `preview.js` (`open()`) -- the dev machine. Packs with the *real* `packRGB565` and streams the result to a browser (`preview.html`) over plain `http`, so a scene can be watched moving without a Pi. Its `close()` is deliberately a no-op: the server outlives any one stage, because switching scenes stops one loop and starts another against it. `shutdown()` is the real teardown.
+- `preview.js` (`open()`) -- the dev machine. Packs with the *real* `packRGB565` and streams the result to a browser (`preview.html`) over plain `http`, so a scene can be watched moving without a Pi. Its `close()` is deliberately a no-op: the server outlives any one stage, because switching scenes stops one loop and starts another against it. `shutdown()` is the real teardown. `--lan` (both CLIs) binds every interface rather than loopback and prints where else it can be reached, because a phone on the same wifi is a real client: a frame is 675 KB and 166 Mbit/s at 30 fps, so anything that isn't on this machine gets `/stream` gzipped (about 30x, half a millisecond, on the threadpool) while loopback stays raw. `?gzip` forces it on for a phone arriving down a tunnel, `?raw` forces it off. Audio is never compressed -- PCM barely deflates and a codec in the path is latency -- but a remote page takes a 300 ms lead instead of 140.
 
 The stage also exposes `pause()`, `resume()`, `seek(frame)` and `state()` so the preview can scrub. Seeking moves the frame counter and nothing else -- time is still `frame / fps`, so a scrubbed frame is exactly the frame playback would have shown.
 
 `preview.html` models what the CRT does that a PNG can't show (4:3 pixel aspect, the two 480i fields, chroma bleed, overscan). Those are display-side only: nothing there may change what a scene builds or how it rasterises.
 
+`preview.html` is also the phone: one page in four shapes, picked by the pointer being a finger and forced with `?play` (picture plus a touchscreen pad), `?tv` (picture alone, filling the screen -- what you mirror to a television, or open on the television itself), `?pad` (the pad alone, no frame stream at all, so a phone can be the controller for a screen showing the game elsewhere) and `?page` (the instrument panel anyway). The touch pad reads its d-pad as eight sectors off where the thumb is and feeds the same held-button set the keyboard does, so `input.js` still can't tell what is pressing it; a tap that begins and ends between two 16 ms polls is held for one poll rather than lost, and pointer capture is asked for but never relied on. Sound is on by default and opens on the first touch, because no browser will start audio before one.
+
 ### The score contract
 
 `{ title, bpm, bassOctave, arpOctave, lead, chords, drums }`. `lead` is one array per bar of `[note, ticks]` pairs summing to 16 (`null` = rest); `chords` is one name per bar from `song.CHORDS`; `drums` is one 16-character string per bar over `K S h -`. `song.validate()` throws on any of these at load time.
+
+### The piece contract
+
+A *piece* (`src/music/pieces/*.js`) is what a score is not: ten minutes, three
+movements, an arrangement that changes, and eight parts the player can switch
+in and out while it plays. `audio/song.js` cannot express any of that, so
+`audio/piece.js` is the second format rather than an extension of the first.
+
+`{ title, subtitle, seed, key, mode, drift, colour, taster, motifs, movements }`
+-> movements `{ name, bpm, swing, sections }` -> sections
+`{ name, bars, chords, parts }` -> parts, one per stem, `{ pattern | motif, octave, vel, open, ... }`.
+
+- **A bar is a fact.** `barEvents(piece, n)` seeds its own generator from the
+  piece seed and `n` and from nothing else, exactly as `priceAt()` does in
+  kingpin and `weatherFor()` does in meadowlark. Nothing that happened earlier
+  in the playthrough can change what bar 91 contains, so muting a part for two
+  minutes cannot send the melody somewhere else, the renderer and the meters
+  agree without talking to each other, and a test can ask what bar 91 holds
+  without playing the first ninety.
+- **The tunes are written, the variations are code.** `motifs` are
+  `[degree, ticks]` pairs per bar, in scale degrees; a section's `transform`
+  applies `steps`, `octave`, `retro`, `thin`, `stretch` and `ornament`. That is
+  where structure comes from -- the same six notes open Sundial plainly, return
+  a fourth lower with a fifth of them gone, and close it at half speed. A
+  generator that invented melodies would make ten minutes of noodling.
+- **A part may sweep across its section.** Any of `vel`, `open`, `density`,
+  `drop` and `ghost` may be `[from, to]` instead of a number, interpolated over
+  the section's bars. That is how a section builds without a new section.
+- **Everything is checked at load**, like `ROOMS` and `PLACES`: bars that do not
+  add up to sixteen ticks, chords nobody can spell, a part naming a pattern that
+  does not exist, a motif that is referenced and not written. `push()` also
+  folds any note outside `LOWEST..HIGHEST` by octaves rather than clamping it --
+  clamping changes the pitch class, and the only out-of-key notes in a piece
+  should not be the ones the safety rail put there.
+- Pieces are discovered by filename like everything else: drop a file in
+  `src/music/pieces/` and it is on halcyon's menu and in `test/halcyon.test.js`.
+
+### The rack
+
+`audio/rack.js` is the instrument a piece is played on, and `audio/tone.js` is
+what it is built from. It is deliberately not `audio/synth.js`: band-limited
+oscillators through a resonant SVF, a two-operator electric piano, a drum kit
+through a sample-rate crusher, noise weather, a shared echo and room, and a
+modulated delay line on the master so the whole thing wanders like tape.
+
+- **Two clocks, one timeline, and they never have to agree.** `advance(dt)`
+  walks the bars at video rate: it queues this frame's notes and moves the
+  meters the *picture* is drawn from. `pull(left, right, frames)` renders the
+  audio for that frame, placing each queued note at its own offset in the block.
+  The split is why the game can be tested and played silently -- nothing is
+  pulled when there is no sink, and the meters and the visual still move.
+- **The meters are musical, not measured.** They come from what is sounding and
+  how hard it was struck, not from the RMS of the rendered block, so the picture
+  is identical whether or not anybody is listening and `--mute` costs nothing.
+- **Nothing allocates in a block.** Voices are pooled at construction and stem
+  buses are owned, the same rule `framebuffer.open()` and `scene3d.target()`
+  work to. Coefficients move at `CONTROL` (32 samples), samples move at sample
+  rate: a filter sweep recomputed per sample spends more time in `Math.tan` than
+  in the filter.
+- **The master fader is a slew, not a switch** (`output` is where it is asked to
+  go, `level` is where it has got to). Stopping the tape lets the room ring out;
+  faded fully out, `pull()` returns immediately and a paused piece is free.
+- The stems' faders ramp across the block for the same reason: a part switched
+  off between two blocks is a click, and parts coming and going is the point.
+- Measured at 0.8 ms a block here, 3 ms with the picture, against 33 ms.
+  `node src/perform.js --bench` is the check.
 
 ### The game contract
 
@@ -79,6 +154,7 @@ A game module exports `title` and `create(width, height, { scores, seed })`, ret
 - **Fixed timestep.** `dt` is always `1 / fps`. Given the same inputs a match replays identically, and `test/game.test.js` asserts it. Anything random uses a seeded PRNG, same rule as scenes.
 - **`scene()` has no side effects.** Called twice on one state it draws the same picture; the tests assert that too.
 - **Sounds are drained, not pushed.** `drain()` returns the effect names produced since the last call, so the game never has to know whether anything is listening. `music()` names the track that should be playing, or null.
+- **A game may bring its own instrument.** The optional `stream()` returns a live source -- anything with `pull(left, right, frames)` that adds a block into the mixer's accumulators. `game.js` hands it to `mixer.live()` and stops asking `music()`. Only `games/halcyon.js` does this; every other game names a track and never learns the seam exists.
 - **Every screen obeys the scene rules.** Palette, overscan, no 1px-tall ink runs -- `test/invariants.js` holds both directories to the same checks.
 - **A game carries a manifest.** `meta` is the shelf card -- `players` (the
   counts it supports, `[1]` or `[1, 2]`), `rating` (`pg` / `13` / `nsfw`),
@@ -187,7 +263,13 @@ Border Patrol's second half, on foot from above, in Kingpin's shape. Rules that 
 - **Weather comes from the calendar, not the running generator.** `weatherFor(day, season, year)` seeds its own rng from the date so a day's work cannot change tomorrow's rain; `test/meadowlark.test.js` asserts it.
 - **Irrigation is a flood fill** from every water tile through 4-adjacent channels (`irrigation()`), recomputed at dawn and cached per frame for the hint. Soil beside a live channel and the eight tiles around a sprinkler beside one are wet in the morning.
 - **Animals hold still beside the farmer.** `wander()` skips an animal when the player is 4-adjacent; without that a hen steps away as you reach for her, and the test that pets one is flaky.
-- The farmhand helper in `test/meadowlark.test.js` moves one tile per six-frame hold: one frame to turn, three for `TURN_DELAY`, two into the step. Hold longer and the stick chains a second step, which is the overshoot that broke the first version of every pathing test.
+- **A turn is only a turn.** A lean that changes `player.dir` spends itself
+  doing that (`game.turned`); the stick has to come back to neutral before it
+  can walk, and a lean in the direction already faced steps on that frame. The
+  first version told the two apart by how long the stick was held, so the same
+  flick sometimes aimed at a tile and sometimes stepped onto it -- and the tile
+  you are aiming at is usually the one you mean to plant in.
+- The farmhand helper in `test/meadowlark.test.js` moves one tile in two gestures: `face()` turns, then a one-frame lean starts the step. Hold longer and the stick chains a second step, which is the overshoot that broke the first version of every pathing test.
 - Music: `meadow` for the menu, then `SEASONS[i].track` (`sprout`, `haze`, `gleaning`, `hearth`) while playing; `null` during the sleep fade and the morning card so the season's theme arrives fresh.
 
 ### The pet (Tomo)
@@ -235,12 +317,59 @@ three lives, two players. Rules that are easy to break from the outside:
   figure every part overlaps its neighbour for the same reason. The pause
   screen merges them into one faded layer, because the dither breaks runs up
   anyway and a scratch copy per sprite is slow.
+- **Two players share nothing but the screen.** Each kid has its own lives,
+  weapon and health; one who runs out is `out`, the day carries on without
+  them, and it is over only when everybody is. A boss gets half again as much
+  hp with two on the pads, while ordinary kids get `level().tough` extra
+  instead -- which is a different `tough` from the `cfg.tough` above, in the
+  same file: one is a hit-point bump per stage, the other is poise.
 - `state()` reports foes, items, shots and both kids' positions because the
   bot in `test/knuckles.test.js` plays the whole day over four seeds and
   three of them have to survive. It is a mediocre player on purpose.
 - Music: `recess` (menus, cards, a win), `homeroom` / `gymclass` / `fieldday`
   (twice) / `assembly` per stage, `detention` under every boss, nothing over a
   loss. `TRACKS` in `game.js`.
+
+### The music machine (Halcyon)
+
+`games/halcyon.js` is the only thing on this shelf that is not a game, and the
+rules that make it one are worth knowing before editing it.
+
+- **The arrangement and the desk are different things.** A section *scores*
+  certain parts; the listener's switches then mute or unmute them. A part
+  switched on but not scored plays nothing and says so with an unlit signal
+  light. That way the structure survives being played with -- you are mixing the
+  piece, not composing it -- and putting everything back on gets you what it
+  meant. `state().scored` is the arrangement, `state().levels` is the desk.
+- **Solo is a view of the desk, not a change to it.** `game.desk` holds what the
+  listener actually set and `applySolo()` projects it onto the rack, so coming
+  out of a solo puts every switch back. Soloing the drums for eight bars used to
+  wipe a mix somebody had spent five minutes making.
+- **There is no ink in the picture at all** (`games/halcyon/view.js`), and it is
+  the second game here to go that way for a different reason than tallow did: a
+  poster outline has to be the last thing drawn over a shape, and this picture
+  is full of things passing behind other things. The disc setting into a ridge
+  cut a one-pixel-tall band out of its own outline, which is exactly the run an
+  interlaced field strobes on. Value does the work instead -- every mark is a
+  dark shape with a bright one inside it, and the five-step wash is wide enough
+  for that to read against any part of the sky.
+- **Whole-pixel edges, computed before the bands are cut from them.** The sky's
+  boundaries are rounded and each band runs edge to edge; rounding a band's top
+  and its height separately left a row unpainted wherever the two rounded
+  opposite ways, and the background here is ink. Kingpin's camera is rounded for
+  the same reason. The ridges' slabs start *above* their nominal line for the
+  same reason again.
+- **Each part owns one thing on screen**, so switching it off takes that thing
+  away: pad the sky, bass the ground and the size of the disc, beat the rings
+  and the sparks, keys the blooms, arp the pillars, lead the light with a tail,
+  choir the aurora, haze the grain. The grain is the only thing always there,
+  which is also what makes a seeded frame differ between seeds.
+- **The disc is the clock.** It crosses the sky once per piece, so where you are
+  in ten minutes is answerable without reading the numbers.
+- The menu is a listening post: moving the cursor mounts that piece at its
+  `taster` and plays it quietly. `mount()` is the only place a rack is opened.
+- Music: none of `TRACKS`. `music()` returns null and `stream()` returns the
+  rack.
 
 ### The town (Kingpin)
 
@@ -275,6 +404,13 @@ also the only one with a minimap. Rules that are easy to break from outside:
   (every price anybody pays you) and `recruitsLeft()` (who will stand on a
   corner). Add a new way to kill somebody and it goes through there or the
   consequence is optional, which is the same as not existing.
+- **A crew is money that scales and an address the police also have.** You hire
+  at the Towers, up to `recruitsLeft()`. A hand takes `CREW_STOCK` units to a
+  corner and sells one every `SELL_EVERY` seconds into `hand.held`, and you have
+  to walk back and take it off them. Above 45 heat every sale risks a raid that
+  takes the hand and the stock with it. Wages come out at dawn; if you cannot
+  pay them nobody stays, and you keep what they were holding but lose the
+  corner.
 - **`intent()` is the only place A is decided**, exactly as in Meadowlark: it
   returns what the button would do and the HUD prints it, so the hint and the
   button cannot disagree. It is also what `state().intent` reports, which is
@@ -283,6 +419,13 @@ also the only one with a minimap. Rules that are easy to break from outside:
   the ways down are the envelope at the station, the box at the church, and
   going to bed. Selling across a counter is half the heat of selling on a
   pavement; guns are three times the heat of drugs.
+- **Four endings, and the quiet one pays.** `bus` (a $200 ticket at the depot,
+  from day three), `taken` (the morning of the twenty-second arrives), `dead`
+  and `prison` keep 100, 50, 25 and 20 per cent of net worth, and leaving on the
+  bus having killed nobody adds a flat 2500 -- deliberately more than a
+  fortnight of shooting people can earn, because otherwise the high score would
+  argue against the whole game. A fourth bust, or one dead policeman, ends the
+  run in a cell whatever the money says.
 - **Cards are modal and the talk box grows.** Anything that happens *to* you
   is a card that takes the pad until A; the conversation box sizes itself to
   its content, because a six-item list in a box built for three lines of prose
@@ -327,7 +470,7 @@ Button numbering is the part that isn't portable, and no numbering is right for 
 
 ### Audio at runtime
 
-Tracks are named by what a game's `music()` returns (`attract` -> `music/pong.js`, `links` -> `music/links.js`, `patrol`/`chase` -> border's menu and driving themes, nothing at all under its rescue, and `refugio` from its dirt road on, `voyage` -> `music/rimward.js`, `angels` plus one per region and `showdown` under all three bosses -> City of Angels, `meadow` plus one per season -> Meadowlark, `tomo`/`hatch`/`nook`/`pantry`/`study` plus `juggle`/`orchard`/`echo` -> Tomo, `recess` plus one per stage and `detention` under every boss -> Timmy Tough Knuckles); the map is `TRACKS` in `game.js`. There is no second looping voice: the mixer's one bed is whatever `music()` asked for, so border's engine is a stream of short one-shots fired at a rate that follows the throttle rather than a loop. `song.js` renders a whole score and normalises it, which is right for a file and wrong for a stream. `audio/mixer.js` is the streaming half: pre-rendered buffers in, one S16_LE block per *video* frame out, fixed master gain, soft-limited with `tanh` (the worst case sums to ~3.3 and hard clipping is audible). Sinks are `audio/speaker.js` (aplay) and `preview.js`'s `/audio`; both drop blocks rather than queue them.
+Tracks are named by what a game's `music()` returns (`attract` -> `music/pong.js`, `links` -> `music/links.js`, `patrol`/`chase` -> border's menu and driving themes, nothing at all under its rescue, and `refugio` from its dirt road on, `voyage` -> `music/rimward.js`, `angels` plus one per region and `showdown` under all three bosses -> City of Angels, `meadow` plus one per season -> Meadowlark, `tomo`/`hatch`/`nook`/`pantry`/`study` plus `juggle`/`orchard`/`echo` -> Tomo, `recess` plus one per stage and `detention` under every boss -> Timmy Tough Knuckles); the map is `TRACKS` in `game.js`. Halcyon is the exception to all of it: it returns null from `music()` and hands `game.js` a live source from `stream()` instead, which the mixer takes with `live()` in place of a bed. There is no second looping voice: the mixer's one bed is whatever `music()` asked for, so border's engine is a stream of short one-shots fired at a rate that follows the throttle rather than a loop. `song.js` renders a whole score and normalises it, which is right for a file and wrong for a stream. `audio/mixer.js` is the streaming half: pre-rendered buffers in, one S16_LE block per *video* frame out, fixed master gain, soft-limited with `tanh` (the worst case sums to ~3.3 and hard clipping is audible). Sinks are `audio/speaker.js` (aplay) and `preview.js`'s `/audio`; both drop blocks rather than queue them.
 
 ## Invariants the tests enforce
 
@@ -346,6 +489,7 @@ Tracks are named by what a game's `music()` returns (`attract` -> `music/pong.js
 - The audio mix never runs out of headroom, and a single sound is not squashed by the limiter.
 - Every doorway in City of Angels opens onto somewhere you can stand, no gate is locked behind the key it holds, and the whole game can be played to its ending with a pad.
 - Score bars sum to 16; the pitch measured back out of the rendered mix matches the written lead; the mix peaks high but never clips.
+- Every piece is three movements of about ten minutes at three different tempos; every note in one is in its key and inside a playable register; a bar expands the same however you arrived at it; every part makes a sound on its own; two renders of the same seconds are identical to the sample. `test/halcyon.test.js`.
 
 ## Hot-path rules (framebuffer.js, raster.js, stage.js)
 

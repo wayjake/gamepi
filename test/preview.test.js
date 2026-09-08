@@ -3,6 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
+const http = require('node:http');
+
 const preview = require('../src/preview');
 const stage = require('../src/gfx/stage');
 const framebuffer = require('../src/framebuffer');
@@ -99,6 +101,88 @@ test('the preview sends the 16-bit pixels the display controller would read', as
     );
 
     await reader.cancel();
+  } finally {
+    view.shutdown();
+  }
+});
+
+// A phone on the wifi is a real client of this thing, and 675 KB of RGB565 at
+// 30 fps is 166 Mbit/s -- more than a phone's radio has. The frames it gets
+// have to be the same frames, only smaller.
+test('a client off this machine gets the same frames, compressed', async () => {
+  const view = preview.open({ port: 0, width: WIDTH, height: HEIGHT });
+  await view.listening;
+  try {
+    const canvas = sceneRenderer.render(build(WIDTH, HEIGHT, 0));
+    const fb = { width: WIDTH, height: HEIGHT, bpp: 16, stride: WIDTH * 2 };
+    const want = preview.HEADER + WIDTH * HEIGHT * 2;
+
+    // What actually crosses the wifi: a raw socket, so nothing decompresses it
+    // on the way past.
+    const wire = await new Promise((resolve, reject) => {
+      const req = http.get(`${view.url()}stream?gzip=1`, { headers: { 'accept-encoding': 'gzip' } }, (res) => {
+        assert.equal(res.headers['content-encoding'], 'gzip');
+        let bytes = 0;
+        res.on('data', (chunk) => {
+          bytes += chunk.length;
+          // One frame's worth of gzip has arrived; that is all this is asking.
+          if (bytes > 1000) { req.destroy(); resolve(bytes); }
+        });
+        res.on('close', () => resolve(bytes));
+      });
+      req.on('error', () => {});
+      // Subscribed only once the headers are back, or the frame goes nowhere.
+      req.on('response', () => setTimeout(() => view.writer.present(canvas), 20));
+      setTimeout(() => { req.destroy(); reject(new Error('no frame arrived')); }, 4000);
+    });
+    assert.ok(wire < want / 5, `a frame went over the wire in ${wire} bytes, not ${want}`);
+
+    // And it is still the frame: fetch inflates it, and what comes out is what
+    // framebuffer.js packed.
+    const res = await fetch(`${view.url()}stream?gzip=1`);
+    const reader = res.body.getReader();
+    view.writer.present(canvas);
+    let got = Buffer.alloc(0);
+    while (got.length < want) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      got = Buffer.concat([got, Buffer.from(value)]);
+    }
+    assert.deepEqual(got.subarray(preview.HEADER, want), framebuffer.pack(canvas, fb));
+    await reader.cancel();
+
+    // Nothing is compressed for a client on this machine that didn't ask: the
+    // loopback preview is quicker without it.
+    const plain = await fetch(`${view.url()}stream`);
+    assert.equal(plain.headers.get('content-encoding'), null);
+    await plain.body.cancel();
+  } finally {
+    view.shutdown();
+  }
+});
+
+// --lan is the whole point of the phone: bind wider than loopback and say
+// where a phone should be pointed.
+test('listening on every interface says where else it can be reached', async () => {
+  const view = preview.open({ port: 0, host: '0.0.0.0' });
+  await view.listening;
+  try {
+    const port = view.address().port;
+    assert.equal(view.url(), `http://127.0.0.1:${port}/`, '0.0.0.0 is a bind, not an address to open');
+    const urls = view.urls();
+    assert.ok(urls.length >= 1, 'no address to hand a phone');
+    for (const url of urls) assert.match(url, new RegExp(`^http://[^/]+:${port}/$`));
+    assert.ok(urls.some((url) => url.includes('.local')), 'the hostname outlasts a DHCP lease; offer it');
+  } finally {
+    view.shutdown();
+  }
+});
+
+test('a loopback preview has nowhere else to be reached', async () => {
+  const view = preview.open({ port: 0 });
+  await view.listening;
+  try {
+    assert.deepEqual(view.urls(), []);
   } finally {
     view.shutdown();
   }

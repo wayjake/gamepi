@@ -6,8 +6,14 @@
 // scores and pause screens; the shell owns the machine.
 //
 // It presents the same interface a game does -- update, scene, drain, music,
-// state -- so src/game.js drives it with exactly the code that used to drive
-// pong, and stage.js still has no idea what it is running.
+// stream, state -- so src/game.js drives it with exactly the code that used to
+// drive pong, and stage.js still has no idea what it is running.
+//
+// "The same interface" is load-bearing and easy to break: game.js only ever
+// talks to this object, so anything a game can be asked that the shell does not
+// forward is a thing that silently does nothing once the game is on the shelf.
+// stream() arrived that way -- halcyon played perfectly when driven directly by
+// its tests and was mute the moment you reached it through the selector.
 
 const fs = require('fs');
 const path = require('path');
@@ -333,6 +339,12 @@ function create(width = 720, height = 480, options = {}) {
     },
     music() {
       return shell.screen === 'playing' ? shell.running.music() : 'attract';
+    },
+    // A game may bring its own instrument rather than name a track (halcyon
+    // does; see stream() in the game contract). Forwarded, and only while one
+    // is actually running -- the selector has its own bed.
+    stream() {
+      return shell.screen === 'playing' && shell.running.stream ? shell.running.stream() : null;
     },
     state() {
       return {

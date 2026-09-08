@@ -40,6 +40,8 @@ browser.
 * **[Watching it without a Pi](#watching-it-without-a-pi)** -- a browser preview
   that models what the CRT does and a PNG cannot show: 4:3 pixels, both
   interlaced fields, chroma bleed and overscan.
+* **[Playing it on a phone, and on the television](#playing-it-on-a-phone-and-on-the-television)**
+  -- `--serve --lan`, the same page as a touchscreen console, and AirPlay.
 * **[One-time Pi setup](#one-time-pi-setup)** -- switching the composite output
   on, and the cable that looks right and will not work.
 
@@ -175,6 +177,86 @@ empty. Timmy Tough Knuckles has six: **Recess** over its menus, then
 **Homeroom**, **Gym Class**, **Field Day** (the soccer field and the courts
 share it) and **Assembly** for the stages, and **Detention** under every boss.
 
+## Ten minutes at a time
+
+Everything above is a chiptune: a score of a couple of dozen bars, rendered in
+one go and looped under whatever is on screen. `src/games/halcyon.js` is the
+other kind of music this machine can make, and it needed a second of everything
+to make it.
+
+    node src/game.js --serve --game halcyon    # play it
+    node src/perform.js --info                 # the arrangement, on paper
+    node src/perform.js --from 3:20 --for 40   # audition one section
+    node src/perform.js --wav sundial.wav      # the whole ten minutes
+    node src/perform.js --piece harvest --mp3 harvest.mp3
+    node src/perform.js --stems out/           # one file per part
+    node src/perform.js --without beat,arp     # the ambient mix
+    node src/perform.js --bench                # can the Pi keep up?
+
+**A piece is an arrangement, not a loop** (`src/audio/piece.js`). It is three
+movements, each with its own tempo and feel; each movement is sections; each
+section has a chord cycle and a list of parts; and each part names a pattern
+and how loud and how open it should be, either as a number or as a pair meaning
+"sweep from here to there across this section". Bars are expanded on demand and
+a bar's contents are seeded from the piece and the bar number and nothing else,
+which is the same trick Kingpin's prices and Meadowlark's weather use: nothing
+that happened earlier in the playthrough can change what bar 91 contains, so
+muting the drums for two minutes cannot send the melody somewhere else, and the
+renderer and the picture agree without ever talking to each other.
+
+The tunes are written down rather than generated. A piece carries motifs -- a
+list of `[degree, ticks]` pairs per bar -- and the sections transform them:
+`steps` moves one through the scale, `octave` moves it a register, `retro`
+reverses it, `thin` throws away a fraction of its notes, `stretch` plays each
+of its bars over two, `ornament` adds a grace note to the long ones. So the
+same six notes open Sundial plainly, come back in its second movement a fourth
+lower with a fifth of them missing, and close it at half speed an octave up.
+That is the structure, and none of it is chance.
+
+**The rig is not the console's synth** (`src/audio/rack.js`, on the primitives
+in `src/audio/tone.js`). Band-limited saws and pulses through a resonant
+state-variable filter, a two-operator electric piano, a drum kit run through a
+sample-rate crusher, noise weather, a shared echo and room, and the whole mix
+through a modulated delay line so it wanders the way a tape does. It renders
+live -- one block per video frame, the same clock the picture is on -- because
+ten minutes of stereo float per piece is not a thing to keep in memory and
+because the parts have to be able to come and go while it plays. Measured at
+0.8 ms a frame here, three ms with the picture, against a 33 ms budget.
+
+**The picture is drawn from the notes, not from the samples.** Each part owns
+one thing on screen -- the pad owns the sky, the bass the ground and the size
+of the disc, the beat the rings and the sparks, the arp the pillars, the keys
+the blooms, the lead the light with a tail, the choir the aurora, the haze the
+grain -- so switching a part off takes its thing away with it. It also means
+the picture moves identically whether or not anybody is listening, which is
+what makes a test of it mean anything and what makes `--mute` free. The disc
+crosses the sky once per piece, so "how far in am I" is answerable without
+reading the clock.
+
+Three pieces, and they are different pieces rather than three tempos of one.
+**Sundial** is a day in F aeolian: light arriving, a long middle that moves,
+light going. **Northlight** is a machine left running in a cold building --
+dorian, no swing at all in its middle movement, and the tune given to the
+sequencer instead of the lead, which is the difference between a melody and a
+readout. **Harvest** is the slow one, in G mixolydian, which is major with the
+seventh flattened: the sound of something being over without being sad about
+it. Each has its own five-step wash in `src/gfx/palette.js`, and that wash is
+the whole of its identity on screen.
+
+The desk is two rows. The bottom row is the eight parts: **A** switches one
+off, **B** solos it, and a light on each cell says whether the arrangement is
+currently asking for that part -- unlit with the switch still up is the answer
+to "why can I not hear it". The top row is three knobs: how much room, how worn
+the tape, and which movement is playing. Solo is a view of the desk rather than
+a change to it, so coming out of one puts every switch back where you left it.
+
+`test/halcyon.test.js` checks the things a score cannot go wrong at: that every
+note in all three pieces is in the key and inside a register something can play,
+that a bar comes out the same whichever order you ask for it in, that every part
+makes a sound on its own, that the mix is loud and never clips, that two renders
+of the same seconds are identical to the sample, and that the pitch measured
+back out of the mix is the pitch that was written.
+
 ## Scenes
 
 `src/render.js` draws a 2D scene to the framebuffer, or to a PNG so you can
@@ -267,6 +349,60 @@ None of this replaces looking at the CRT -- it is a model of one, and the insets
 in `src/gfx/safearea.js` still have to be measured with `--scene calibrate` and a
 camera. It replaces the round trip for everything short of that.
 
+### Playing it on a phone, and on the television
+
+    node src/game.js --serve --lan
+
+`--lan` binds every interface instead of loopback and prints where else the
+server can be reached -- `http://jake.local:7480/` and whatever the DHCP lease
+says. Point a phone at it and the same page comes up in a different shape: the
+picture edge to edge with a touchscreen pad over it, no instrument panel. The
+mode is picked by the pointer being a finger and can be forced either way.
+
+| | |
+| --- | --- |
+| `?play` | the picture with the touchscreen pad over it -- what a phone gets |
+| `?tv` | the picture alone, filling the screen, no controls |
+| `?pad` | the pad alone: the phone as a controller, no frames at all |
+| `?page` | the instrument panel, on a tablet that would rather have it |
+| `?raw` | don't compress the frames (see below) |
+
+The pad is a d-pad read as eight sectors off where the thumb actually is -- a
+thumb between two directions means both of them -- two face buttons, and the
+three the shell wants (SELECT, START, and the star that quits back to the
+selector). It sets exactly the held-button set the keyboard does, so
+`src/input.js` still cannot tell what is pressing it. A real controller paired
+to the phone takes over the moment it sends anything, the same as on the desktop
+page.
+
+Onto a television, two ways round:
+
+* **Mirror the phone.** AirPlay from the iPhone's Control Centre to an Apple TV
+  or an AirPlay 2 set: picture and sound both go, the touch controls stay in
+  your hands, and nothing here has to know about it. Add the page to the home
+  screen first (Share -> Add to Home Screen) and it opens without Safari's
+  chrome. This is the one that needs no setup.
+* **Give the television the page and the phone the pad.** Anything with a
+  browser -- a Google TV, most smart sets -- opens `?tv` itself, and the phone
+  opens `?pad` beside it. Input goes to the server, not to the screen, so the
+  two do not have to be the same device. A Chromecast with no browser can't do
+  this; mirror instead.
+
+Either way the phone won't sleep mid-game (`navigator.wakeLock`), and sound
+starts on the first touch, because no browser will start audio before that.
+
+A frame is 675 KB of RGB565, which at 30 fps is 166 Mbit/s -- fine down a
+loopback socket, hopeless over wifi. Flat poster colours deflate about thirty to
+one, so anything that isn't on this machine gets the stream gzipped and reads
+about 5 Mbit/s instead; it costs half a millisecond a frame, on the threadpool
+rather than in the loop. Audio isn't compressed (PCM barely deflates and a codec
+in the path is latency), but it does get a longer lead: 300 ms rather than 140,
+because over wifi a stall arrives as a gap in the music.
+
+`--lan` is a local network and no more than that: there is no authentication on
+the preview server, so anything on that wifi can play, pause and quit the
+console. That is generally the point.
+
 ### Making it fast enough
 
 The first working version ran at 19 fps. Measured on the Pi 4, per frame at
@@ -338,6 +474,10 @@ looks like a shelf rather than a list.
   other than what the billboards promised: a pickup across the road, a dirt
   track into the hills, and a town called Refugio where the rest of the game
   is on foot. See [An endless road](#an-endless-road).
+* **HALCYON** -- not a game. Three ten-minute pieces in three movements each,
+  generated note by note as they play, and a desk in front of them: eight
+  parts, and every one of them yours to take out and put back. See
+  [Ten minutes at a time](#ten-minutes-at-a-time).
 * **CITY OF ANGELS** -- an overhead adventure across fifteen rooms of Los
   Angeles. A bat, a can of spray paint, a boombox, three regions with their own
   soundtrack, people who talk to you, and three of them holding the city.
@@ -383,6 +523,8 @@ sort of thing a shelf needs and a filename cannot carry. `--list` prints it:
 
     angels      CITY OF ANGELS  1 PLAYER  13+  8-BIT  2D
                 SAVE LA  --  street violence, drug references
+    halcyon     HALCYON         1 PLAYER  PG  SYNTH  2D
+                THREE PIECES, EIGHT PARTS
     kingpin     KINGPIN         1 PLAYER  NSFW  8-BIT  2D
                 RUN THE TOWN  --  drug dealing, gun violence, civilian deaths
     knuckles    TOUGH KNUCKLES  1-2 PLAYERS  PG  8-BIT  2D
