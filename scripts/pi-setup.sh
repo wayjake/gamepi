@@ -66,6 +66,49 @@ systemctl daemon-reload
 systemctl enable --now gamepi-performance.service >/dev/null 2>&1
 echo "cpu: governor pinned to $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor) (systemctl disable gamepi-performance to undo)"
 
+# The gamepad. Two kernel modules stand between a paired 8BitDo and
+# /dev/input/js0, and RPi OS loads neither on its own:
+#
+#   hidp    the Bluetooth HID protocol. Without it bluetoothd can pair, trust
+#           and hold a link -- the pad lights up and `bluetoothctl info` says
+#           `Connected: yes` -- but it can never turn that link into an input
+#           device. Connecting fails with `br-connection-create-socket` and
+#           /proc/bus/input/devices stays empty. It reads as a dead pad rather
+#           than as a missing module, which is why it is worth a paragraph.
+#   joydev  what creates /dev/input/js*, the only thing src/joystick.js opens.
+#           Without it an attached pad is an event node and nothing else.
+#
+# Loaded now, and again at every boot.
+cat > /etc/modules-load.d/gamepi-gamepad.conf <<'MODS'
+# gamePi: a Bluetooth pad needs both of these to reach /dev/input/js0
+hidp
+joydev
+MODS
+modprobe hidp joydev 2>/dev/null || echo "modules: modprobe failed (harmless if this is a dry run)"
+echo "modules: hidp and joydev loaded, and set to load at boot"
+
+# Some images come up with the Bluetooth radio soft-blocked, and the block
+# outlives a reboot -- so unblocking it by hand once is not enough. A unit,
+# rather than a line here, because this has to happen on every boot and before
+# bluetoothd goes looking for an adapter.
+cat > /etc/systemd/system/gamepi-bluetooth.service <<'UNIT'
+[Unit]
+Description=Unblock the Bluetooth radio for gamePi's pad
+Before=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now gamepi-bluetooth.service >/dev/null 2>&1
+echo "bluetooth: radio unblocked (systemctl disable gamepi-bluetooth to undo)"
+
 # `sudo nano` runs with HOME=/root, so a terminfo entry installed into the
 # user's ~/.terminfo isn't visible to it. Install this terminal system-wide.
 if [ -n "${SUDO_USER:-}" ] && [ -d "/home/$SUDO_USER/.terminfo" ]; then

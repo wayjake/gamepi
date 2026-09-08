@@ -85,6 +85,12 @@ cursor in `cmdline.txt`. It also copies any terminfo entries from
 `~/.terminfo` into `/etc/terminfo`, so `sudo nano` works from a terminal the
 Pi doesn't ship a description for (Ghostty, say).
 
+It also does the two things a Bluetooth pad needs and RPi OS does not do on its
+own: loads the `hidp` and `joydev` kernel modules (and writes
+`/etc/modules-load.d/gamepi-gamepad.conf` so they come back on every boot), and
+installs a unit that unblocks the Bluetooth radio before `bluetoothd` starts
+looking for an adapter.
+
     scripts/deploy.sh
     ssh -t jake@gamepi.local 'sudo bash ~/gamePi/scripts/pi-setup.sh && sudo reboot'
 
@@ -101,6 +107,22 @@ If `/dev/fb0` still doesn't exist after the reboot, composite has no hotplug
 detect and the connector may have come up disabled -- force a mode by adding
 `video=Composite-1:720x480@60i` to `cmdline.txt` (same line, space separated)
 and rebooting again.
+
+Pairing a pad, once the setup script has run:
+
+    bluetoothctl --agent NoInputNoOutput
+    # hold Start+Y on an 8BitDo SN30 Pro until its lights run, then:
+    scan on
+    pair E4:17:...    trust E4:17:...    connect E4:17:...
+
+`trust` is the one that matters -- it is what lets the pad reconnect by itself
+after a reboot. If `bluetoothctl` says `Connected: yes` but nothing moves,
+check `ls /dev/input/js*`. A pad that pairs and connects but never becomes a
+device is `hidp` missing (connecting fails with `br-connection-create-socket`
+and `/proc/bus/input/devices` is empty); a pad with an `event0` and no `js0` is
+`joydev` missing. `scripts/pi-setup.sh` loads both. Nothing needs restarting
+after the pad appears -- `joystick.open()` retries the device every second, so
+a game already running picks it up on its own.
 
 ## Usage
 
